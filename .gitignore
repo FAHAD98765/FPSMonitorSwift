@@ -1,0 +1,30 @@
+# --- Xcode / iOS ---
+ios-app/*.xcodeproj/
+ios-app/*.xcworkspace/
+ios-app/DerivedData/
+ios-app/build/
+ios-app/.build/
+ios-app/xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+# Swift Package Manager (resolved packages are re-fetched by Xcode/XcodeGen)
+ios-app/.swiftpm/
+
+# --- macOS junk ---
+.DS_Store
+
+# --- Node (signaling server) ---
+SignalingServer/node_modules/
+SignalingServer/npm-debug.log*
+SignalingServer/.env
+
+# --- Python (signaling relay) ---
+SignalingServer/__pycache__/
+SignalingServer/*.pyc
+SignalingServer/venv/
+SignalingServer/.venv/
+
+# --- Editors ---
+.vscode/
+.idea/

@@ -1,0 +1,43 @@
+name: FPSMonitor
+options:
+  bundleIdPrefix: com.fpsmonitor
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+
+settings:
+  MARKETING_VERSION: "1.0"
+  CURRENT_PROJECT_VERSION: "1"
+  SWIFT_VERSION: "5.0"
+
+packages:
+  WebRTC:
+    url: https://github.com/stasel/WebRTC
+    from: 132.0.0
+
+targets:
+  FPSMonitor:
+    type: application
+    platform: iOS
+    sources:
+      - path: FPSMonitor
+    dependencies:
+      - package: WebRTC
+        product: WebRTC
+    info:
+      path: FPSMonitor/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: FPS Monitor
+        UILaunchStoryboardName: LaunchScreen
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        NSCameraUsageDescription: "FPS Monitor needs camera access to broadcast live video to the viewer device."
+        NSLocalNetworkUsageDescription: "FPS Monitor needs local network access to connect the two devices over WiFi."
+        NSBonjourServices:
+          - _fpsmonitor._tcp
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.fpsmonitor.app
+        TARGETED_DEVICE_FAMILY: "1"
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: true
