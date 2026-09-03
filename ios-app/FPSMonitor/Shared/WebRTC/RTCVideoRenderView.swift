@@ -8,18 +8,24 @@ import WebRTC
 private final class FrameCountingRenderer: NSObject, RTCVideoRenderer {
     private let target: RTCMTLVideoView
     var onFrame: (() -> Void)?
+    private var loggedFrames = 0
 
     init(target: RTCMTLVideoView) {
         self.target = target
     }
 
     func setSize(_ size: CGSize) {
+        print("[RTCVideoRenderView] setSize called: \(size)")
         target.setSize(size)
     }
 
     func renderFrame(_ frame: RTCVideoFrame?) {
         target.renderFrame(frame)
         if frame != nil {
+            if loggedFrames < 5 {
+                loggedFrames += 1
+                print("[RTCVideoRenderView] renderFrame #\(loggedFrames) received")
+            }
             onFrame?()
         }
     }
@@ -68,6 +74,6 @@ struct RTCVideoRenderView: UIViewRepresentable {
 
     final class Coordinator {
         var attachedTrack: RTCVideoTrack?
-        var renderer: FrameCountingRenderer?
+        fileprivate var renderer: FrameCountingRenderer?
     }
 }

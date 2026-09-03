@@ -35,6 +35,7 @@ struct ViewerView: View {
                 showScanner = false
                 if let info = ConnectionInfo.fromQRPayload(payload) {
                     viewModel.applyScanned(info)
+                    viewModel.connect()
                 }
             }
             .ignoresSafeArea()
@@ -82,41 +83,33 @@ struct ViewerView: View {
 
     private var setupPanel: some View {
         VStack(spacing: 20) {
+            Image(systemName: "qrcode.viewfinder")
+                .font(.system(size: 48))
+                .foregroundColor(.white.opacity(0.8))
+
             Text("Connect to Broadcaster")
                 .font(.title2.bold())
                 .foregroundColor(.white)
+
+            Text("Scan the QR code shown on the broadcaster's screen")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
 
             Button(action: { showScanner = true }) {
                 Label("Scan QR Code", systemImage: "qrcode.viewfinder")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
                     .padding()
-                    .background(Color.white.opacity(0.15))
-                    .foregroundColor(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-            }
-
-            VStack(alignment: .leading, spacing: 12) {
-                LabeledField(label: "Host (producer's WiFi IP)", text: $viewModel.host, placeholder: "192.168.1.10")
-                LabeledField(label: "Port", text: $viewModel.port, placeholder: "8765", keyboard: .numberPad)
-                LabeledField(label: "Session ID", text: $viewModel.sessionId, placeholder: "fpsmonitor-session")
-            }
-            .padding()
-            .background(Color(white: 0.12))
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-
-            Text(viewModel.statusMessage)
-                .font(.footnote)
-                .foregroundColor(.secondary)
-
-            Button(action: viewModel.connect) {
-                Text("Connect")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding()
                     .background(Color.accentColor)
                     .foregroundColor(.white)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
+            }
+
+            if !viewModel.statusMessage.isEmpty && viewModel.statusMessage != "Not connected" {
+                Text(viewModel.statusMessage)
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
             }
         }
         .padding()

@@ -1,11 +1,12 @@
 import Foundation
 import WebRTC
+import AVFoundation
 
 protocol WebRTCManagerDelegate: AnyObject {
     func webRTC(_ manager: WebRTCManager, didGenerateCandidate candidate: RTCIceCandidate, forPeer peerId: String)
     func webRTC(_ manager: WebRTCManager, didChangeConnectionState state: RTCIceConnectionState, forPeer peerId: String)
     func webRTC(_ manager: WebRTCManager, didReceiveRemoteVideoTrack track: RTCVideoTrack, forPeer peerId: String)
-    /// Fired for every *locally captured* frame (producer side FPS measurement).
+    /// Fired for every locally captured frame (producer side FPS measurement).
     func webRTCDidCaptureLocalFrame(_ manager: WebRTCManager)
 }
 
@@ -24,10 +25,19 @@ final class WebRTCManager: NSObject {
     }()
 
     private var peerConnections: [String: RTCPeerConnection] = [:]
+    /// Must be strongly retained — RTCPeerConnection.delegate is weak, so if
+    /// nothing else holds the proxy, it deallocates right after being assigned
+    /// and NO callbacks ever fire (no ICE candidates, no connection state
+    /// changes, no remote track). Symptom: stuck on "Negotiating...", black screen.
+    private var peerConnectionDelegates: [String: PeerConnectionDelegateProxy] = [:]
     private var localVideoTrack: RTCVideoTrack?
     private var videoCapturer: RTCCameraVideoCapturer?
     private var localVideoSource: RTCVideoSource?
-    private var frameCounterDelegateProxy: LocalFrameCounter?
+    /// Must be strongly retained here — RTCCameraVideoCapturer.delegate is weak,
+    /// so if nothing else holds this, it deallocates immediately after
+    /// startCapture() returns and NO frames ever reach the video source
+    /// (symptom: black local preview, nothing sent to viewer either).
+    private var capturerDelegate: RTCVideoCapturerDelegate?
 
     private let iceServers: [RTCIceServer] = [
         // STUN only — this app is designed for same-LAN use, so host/srflx
@@ -40,42 +50,89 @@ final class WebRTCManager: NSObject {
     /// Starts capturing the front or back camera and returns the local video track,
     /// so the UI layer can render a local preview.
     func startCapture(useFrontCamera: Bool, completion: @escaping (RTCVideoTrack?) -> Void) {
+        // Explicit permission check first — if the user denied camera access
+        // (even from an earlier test run), iOS will NOT re-prompt automatically
+        // and AVCaptureSession will simply produce no frames (black screen,
+        // no crash, no obvious error). Fail loudly here instead.
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            performStartCapture(useFrontCamera: useFrontCamera, completion: completion)
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    if granted {
+                        self.performStartCapture(useFrontCamera: useFrontCamera, completion: completion)
+                    } else {
+                        print("[WebRTCManager] Camera permission DENIED by user just now.")
+                        completion(nil)
+                    }
+                }
+            }
+        case .denied, .restricted:
+            print("[WebRTCManager] Camera permission is DENIED/RESTRICTED. Go to Settings > Privacy & Security > Camera > FPSMonitor and enable it.")
+            completion(nil)
+        @unknown default:
+            completion(nil)
+        }
+    }
+
+    private func performStartCapture(useFrontCamera: Bool, completion: @escaping (RTCVideoTrack?) -> Void) {
         let source = Self.factory.videoSource()
         localVideoSource = source
 
-        let counter = LocalFrameCounter { [weak self] in
+        let counterCallback: () -> Void = { [weak self] in
             guard let self else { return }
             self.delegate?.webRTCDidCaptureLocalFrame(self)
         }
-        frameCounterDelegateProxy = counter
+        let delegate = FrameCountingCapturerDelegate(source: source, onFrame: counterCallback)
+        capturerDelegate = delegate
 
-        let capturer = RTCCameraVideoCapturer(delegate: counter.wrapping(source))
+        let capturer = RTCCameraVideoCapturer(delegate: delegate)
         videoCapturer = capturer
 
-        guard let device = RTCCameraVideoCapturer.captureDevices().first(where: {
+        let allDevices = RTCCameraVideoCapturer.captureDevices()
+        print("[WebRTCManager] available capture devices: \(allDevices.map { "\($0.localizedName) (\($0.position.rawValue))" })")
+
+        guard let device = allDevices.first(where: {
             $0.position == (useFrontCamera ? .front : .back)
-        }) ?? RTCCameraVideoCapturer.captureDevices().first else {
+        }) ?? allDevices.first else {
+            print("[WebRTCManager] NO CAMERA DEVICE FOUND. Are you running on a real device (not Simulator)?")
             completion(nil)
             return
         }
+        print("[WebRTCManager] selected device: \(device.localizedName)")
 
         let formats = RTCCameraVideoCapturer.supportedFormats(for: device)
-        let targetFormat = formats.first(where: {
+        // Prefer a ~720p format, but among formats at that resolution pick the
+        // one with the HIGHEST supported frame rate — same resolution can have
+        // multiple distinct format entries (e.g. 720p@30 vs 720p@60), and just
+        // taking the first match risks silently capping us at 30fps.
+        let candidates720p = formats.filter {
             let dims = CMVideoFormatDescriptionGetDimensions($0.formatDescription)
             return dims.width == 1280 && dims.height == 720
+        }
+        let targetFormat = candidates720p.max(by: {
+            let maxA = $0.videoSupportedFrameRateRanges.map { $0.maxFrameRate }.max() ?? 0
+            let maxB = $1.videoSupportedFrameRateRanges.map { $0.maxFrameRate }.max() ?? 0
+            return maxA < maxB
         }) ?? formats.last
 
         guard let format = targetFormat else {
+            print("[WebRTCManager] NO SUPPORTED FORMAT FOUND for device.")
             completion(nil)
             return
         }
-
+        let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
         let fpsRanges = format.videoSupportedFrameRateRanges
         let maxFPS = fpsRanges.map { $0.maxFrameRate }.max() ?? 30
+        print("[WebRTCManager] selected format: \(dims.width)x\(dims.height), max supported fps: \(maxFPS)")
 
-        capturer.startCapture(with: device, format: format, fps: Int(min(maxFPS, 30))) { error in
+        capturer.startCapture(with: device, format: format, fps: Int(min(maxFPS, 60))) { error in
             if let error {
                 print("[WebRTCManager] capture error: \(error)")
+            } else {
+                print("[WebRTCManager] startCapture completion — no error reported.")
             }
         }
 
@@ -87,6 +144,7 @@ final class WebRTCManager: NSObject {
     func stopCapture() {
         videoCapturer?.stopCapture()
         videoCapturer = nil
+        capturerDelegate = nil
     }
 
     var currentLocalVideoTrack: RTCVideoTrack? { localVideoTrack }
@@ -104,7 +162,9 @@ final class WebRTCManager: NSObject {
 
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         let pc = Self.factory.peerConnection(with: config, constraints: constraints, delegate: nil)!
-        pc.delegate = PeerConnectionDelegateProxy(peerId: peerId, owner: self)
+        let proxy = PeerConnectionDelegateProxy(peerId: peerId, owner: self)
+        peerConnectionDelegates[peerId] = proxy
+        pc.delegate = proxy
 
         if let track = localVideoTrack {
             pc.add(track, streamIds: ["fpsmonitor-stream"])
@@ -117,11 +177,13 @@ final class WebRTCManager: NSObject {
     func closePeerConnection(for peerId: String) {
         peerConnections[peerId]?.close()
         peerConnections.removeValue(forKey: peerId)
+        peerConnectionDelegates.removeValue(forKey: peerId)
     }
 
     func closeAll() {
         peerConnections.values.forEach { $0.close() }
         peerConnections.removeAll()
+        peerConnectionDelegates.removeAll()
     }
 
     // MARK: - Producer: create offer for a new viewer
@@ -223,9 +285,12 @@ private final class PeerConnectionDelegateProxy: NSObject, RTCPeerConnectionDele
         self.owner = owner
     }
 
-    func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {}
+    func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {
+        print("[WebRTC][\(peerId)] signaling state -> \(stateChanged.rawValue)")
+    }
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didAdd stream: RTCMediaStream) {
+        print("[WebRTC][\(peerId)] didAdd stream, video tracks: \(stream.videoTracks.count)")
         if let track = stream.videoTracks.first {
             owner?.notifyRemoteTrack(track, peerId: peerId)
         }
@@ -235,12 +300,16 @@ private final class PeerConnectionDelegateProxy: NSObject, RTCPeerConnectionDele
     func peerConnectionShouldNegotiate(_ peerConnection: RTCPeerConnection) {}
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceConnectionState) {
+        print("[WebRTC][\(peerId)] ICE connection state -> \(newState.rawValue)")
         owner?.notifyConnectionState(newState, peerId: peerId)
     }
 
-    func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceGatheringState) {}
+    func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceGatheringState) {
+        print("[WebRTC][\(peerId)] ICE gathering state -> \(newState.rawValue)")
+    }
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {
+        print("[WebRTC][\(peerId)] generated ICE candidate")
         owner?.notifyCandidate(candidate, peerId: peerId)
     }
 
@@ -248,20 +317,13 @@ private final class PeerConnectionDelegateProxy: NSObject, RTCPeerConnectionDele
     func peerConnection(_ peerConnection: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {}
 }
 
-/// Wraps an RTCVideoCapturerDelegate (the video source) so we can also
-/// count locally-captured frames without touching WebRTC internals.
-private final class LocalFrameCounter {
-    private let onFrame: () -> Void
-    init(onFrame: @escaping () -> Void) { self.onFrame = onFrame }
-
-    func wrapping(_ source: RTCVideoSource) -> RTCVideoCapturerDelegate {
-        return FrameCountingCapturerDelegate(source: source, onFrame: onFrame)
-    }
-}
-
+/// Wraps the video source's capturer delegate so we can also count
+/// locally-captured frames without touching WebRTC internals. Must be
+/// retained by the caller — RTCCameraVideoCapturer holds its delegate weakly.
 private final class FrameCountingCapturerDelegate: NSObject, RTCVideoCapturerDelegate {
     let source: RTCVideoSource
     let onFrame: () -> Void
+    private var loggedFrames = 0
 
     init(source: RTCVideoSource, onFrame: @escaping () -> Void) {
         self.source = source
@@ -270,6 +332,10 @@ private final class FrameCountingCapturerDelegate: NSObject, RTCVideoCapturerDel
 
     func capturer(_ capturer: RTCVideoCapturer, didCapture frame: RTCVideoFrame) {
         source.capturer(capturer, didCapture: frame)
+        if loggedFrames < 5 {
+            loggedFrames += 1
+            print("[WebRTCManager] captured frame #\(loggedFrames): \(frame.width)x\(frame.height)")
+        }
         onFrame()
     }
 }

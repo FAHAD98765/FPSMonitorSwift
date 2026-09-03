@@ -19,11 +19,20 @@ final class ViewerViewModel: NSObject, ObservableObject {
     private let signaling = SignalingClient()
     private let webRTC = WebRTCManager()
     private var producerPeerId: String?
+    private var cancellables = Set<AnyCancellable>()
 
     override init() {
         super.init()
         signaling.delegate = self
         webRTC.delegate = self
+        // Same reasoning as ProducerViewModel: forward FPSMonitor's own
+        // @Published changes into our objectWillChange so ViewerView's
+        // @StateObject observation actually re-renders the FPS text.
+        fpsMonitor.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
     }
 
     func applyScanned(_ info: ConnectionInfo) {
@@ -164,6 +173,6 @@ extension ViewerViewModel: WebRTCManagerDelegate {
     }
 
     func webRTCDidCaptureLocalFrame(_ manager: WebRTCManager) {
-        // Viewer doesn't capture local video.
+        
     }
 }

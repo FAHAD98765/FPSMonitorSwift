@@ -20,11 +20,21 @@ final class ProducerViewModel: NSObject, ObservableObject {
     private let signaling = SignalingClient()
     private let webRTC = WebRTCManager()
     private var viewerConnectionStates: [String: RTCIceConnectionState] = [:]
+    private var cancellables = Set<AnyCancellable>()
 
     override init() {
         super.init()
         signaling.delegate = self
         webRTC.delegate = self
+        // FPSMonitor is its own ObservableObject; ProducerView only observes
+        // `viewModel` via @StateObject, so FPSMonitor's @Published changes
+        // (smoothedFPS etc.) would otherwise never trigger a re-render.
+        // Forward its change notifications into our own objectWillChange.
+        fpsMonitor.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
     }
 
     var qrPayload: String {
