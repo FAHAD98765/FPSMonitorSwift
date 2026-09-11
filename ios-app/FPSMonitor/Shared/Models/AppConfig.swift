@@ -1,11 +1,13 @@
-
 import Foundation
 
 /// Central place to change how the two devices find/connect to each other.
 enum AppConfig {
 
-    /// Default signaling server port.
-    static let defaultSignalingPort: Int = 8765
+    /// Fly.io deployed server (PUBLIC)
+    static let defaultSignalingHost: String = "fpsmonitor-server.fly.dev"
+    
+    /// HTTPS port
+    static let defaultSignalingPort: Int = 443
 
     /// Default session ID.
     static let defaultSessionId: String = "fpsmonitor-session"
@@ -18,6 +20,25 @@ enum AppConfig {
 
     /// Freeze detection threshold.
     static let freezeDetectionThreshold: TimeInterval = 1.5
+    
+    /// Get connection info for signaling
+    static func getConnectionInfo() -> ConnectionInfo {
+        ConnectionInfo(
+            host: defaultSignalingHost,
+            port: defaultSignalingPort,
+            sessionId: defaultSessionId
+        )
+    }
+    
+    /// Get QR code payload for web viewer
+    static func getQRCodePayload() -> String {
+        let connection = ConnectionInfo(
+            host: defaultSignalingHost,
+            port: defaultSignalingPort,
+            sessionId: defaultSessionId
+        )
+        return connection.toQRPayload()
+    }
 }
 
 enum DeviceRole: String, Codable {
@@ -34,19 +55,20 @@ struct ConnectionInfo: Codable, Equatable {
 
     /// WebSocket URL used by the native WebRTC app.
     var signalingURL: URL? {
-        URL(string: "ws://\(host):\(port)")
+        let scheme = port == 443 ? "wss" : "ws"
+        return URL(string: "\(scheme)://\(host):\(port)")
     }
 
     /// URL that will be stored inside the QR code.
     ///
     /// Example:
-    /// http://192.168.100.15:8765/view?session=fpsmonitor-session
+    /// https://fpsmonitor-server.fly.dev/view?session=fpsmonitor-session
     func toQRPayload() -> String {
 
         var components = URLComponents()
-        components.scheme = "http"
+        components.scheme = "https"
         components.host = host
-        components.port = port
+        components.port = port == 443 ? nil : port
         components.path = "/view"
         components.queryItems = [
             URLQueryItem(name: "session", value: sessionId)
@@ -64,7 +86,6 @@ struct ConnectionInfo: Codable, Equatable {
                   resolvingAgainstBaseURL: false
               ),
               let host = components.host,
-              let port = components.port,
               let sessionId = components.queryItems?
                   .first(where: { $0.name == "session" })?
                   .value
@@ -74,7 +95,7 @@ struct ConnectionInfo: Codable, Equatable {
 
         return ConnectionInfo(
             host: host,
-            port: port,
+            port: components.port ?? 443,
             sessionId: sessionId
         )
     }
