@@ -6,7 +6,7 @@ const os = require('os');
 
 const PORT = process.env.PORT || 8765;
 
-const WEB_ROOT = path.resolve(__dirname, '../WebViewer');
+const WEB_ROOT = path.resolve(__dirname, 'WebViewer');
 
 // sessionId -> { producer: ws|null, viewers: Set<ws> }
 const sessions = new Map();

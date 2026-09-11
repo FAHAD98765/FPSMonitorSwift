@@ -1,7 +1,12 @@
+<<<<<<< HEAD
+=======
+
+>>>>>>> 77ab91f (Update WebViewer UI and host status)
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+<<<<<<< HEAD
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FPS Monitor Viewer</title>
 </head>
@@ -15,5 +20,426 @@
     <p id="fps">FPS: --</p>
 
     <script src="app.js"></script>
+=======
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    >
+
+    <title>FPS Monitor Viewer</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html,
+        body {
+            width: 100%;
+            min-height: 100%;
+            font-family:
+                -apple-system,
+                BlinkMacSystemFont,
+                "Segoe UI",
+                Roboto,
+                Helvetica,
+                Arial,
+                sans-serif;
+            background: #0b0d10;
+            color: #ffffff;
+        }
+
+        body {
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 24px;
+        }
+
+        .app {
+            width: 100%;
+            max-width: 1200px;
+        }
+
+        /* =========================
+           HEADER
+        ========================= */
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 18px;
+            gap: 16px;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .brand-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #22c55e;
+            box-shadow: 0 0 14px rgba(34, 197, 94, 0.65);
+        }
+
+        .brand h1 {
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: -0.3px;
+        }
+
+        .viewer-label {
+            font-size: 13px;
+            color: #8b929d;
+        }
+
+        /* =========================
+           VIDEO CARD
+        ========================= */
+
+        .video-card {
+            position: relative;
+            width: 100%;
+            background: #000;
+            border-radius: 18px;
+            overflow: hidden;
+            border: 1px solid #20242b;
+            box-shadow:
+                0 20px 60px rgba(0, 0, 0, 0.45);
+        }
+
+        #remoteVideo {
+            display: block;
+            width: 100%;
+            height: auto;
+            min-height: 300px;
+            max-height: 75vh;
+            object-fit: contain;
+            background: #000;
+        }
+
+        /* =========================
+           VIDEO OVERLAY
+        ========================= */
+
+        .video-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+
+            padding: 16px;
+            pointer-events: none;
+        }
+
+        .status-badge,
+        .fps-badge {
+            background: rgba(0, 0, 0, 0.65);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+
+            padding: 8px 12px;
+
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .status-badge {
+            color: #ffffff;
+        }
+
+        .fps-badge {
+            color: #22c55e;
+        }
+
+        /* =========================
+           INFO
+        ========================= */
+
+        .info {
+            margin-top: 14px;
+
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+
+            gap: 12px;
+
+            padding: 14px 16px;
+
+            background: #12151a;
+            border: 1px solid #20242b;
+            border-radius: 14px;
+        }
+
+        .connection {
+            display: flex;
+            align-items: center;
+            gap: 9px;
+
+            font-size: 14px;
+            color: #aeb5bf;
+        }
+
+        .connection-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #22c55e;
+        }
+
+        .session {
+            font-size: 12px;
+            color: #6f7782;
+            text-align: right;
+            word-break: break-all;
+        }
+
+        /* =========================
+           RESPONSIVE - TABLET
+        ========================= */
+
+        @media (max-width: 768px) {
+
+            body {
+                padding: 14px;
+                align-items: flex-start;
+            }
+
+            .app {
+                margin-top: 8px;
+            }
+
+            .header {
+                margin-bottom: 12px;
+            }
+
+            .brand h1 {
+                font-size: 18px;
+            }
+
+            .viewer-label {
+                font-size: 12px;
+            }
+
+            .video-card {
+                border-radius: 14px;
+            }
+
+            #remoteVideo {
+                min-height: 220px;
+                max-height: 70vh;
+            }
+
+            .video-overlay {
+                padding: 10px;
+            }
+
+            .status-badge,
+            .fps-badge {
+                font-size: 11px;
+                padding: 7px 9px;
+            }
+
+            .info {
+                padding: 12px;
+                border-radius: 12px;
+            }
+        }
+
+        /* =========================
+           RESPONSIVE - MOBILE
+        ========================= */
+
+        @media (max-width: 480px) {
+
+            body {
+                padding: 10px;
+            }
+
+            .app {
+                margin-top: 4px;
+            }
+
+            .header {
+                margin-bottom: 10px;
+            }
+
+            .brand {
+                gap: 9px;
+            }
+
+            .brand-dot {
+                width: 9px;
+                height: 9px;
+            }
+
+            .brand h1 {
+                font-size: 16px;
+            }
+
+            .viewer-label {
+                font-size: 11px;
+            }
+
+            .video-card {
+                border-radius: 12px;
+            }
+
+            #remoteVideo {
+                min-height: 210px;
+                max-height: 68vh;
+            }
+
+            .video-overlay {
+                padding: 8px;
+            }
+
+            .status-badge,
+            .fps-badge {
+                font-size: 10px;
+                padding: 6px 8px;
+                border-radius: 8px;
+            }
+
+            .info {
+                margin-top: 10px;
+                padding: 10px 12px;
+
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .session {
+                text-align: left;
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <main class="app">
+
+        <!-- HEADER -->
+        <header class="header">
+
+            <div class="brand">
+                <span class="brand-dot"></span>
+
+                <h1>FPS Monitor</h1>
+            </div>
+
+            <span class="viewer-label">
+                Live Viewer
+            </span>
+
+        </header>
+
+
+        <!-- VIDEO -->
+        <section class="video-card">
+
+            <video
+                id="remoteVideo"
+                autoplay
+                playsinline
+                muted
+            ></video>
+
+
+            <!-- VIDEO OVERLAY -->
+            <div class="video-overlay">
+
+                <div
+                    class="status-badge"
+                    id="status"
+                >
+                    Connecting...
+                </div>
+
+                <div
+                    class="fps-badge"
+                    id="fps"
+                >
+                    FPS: --
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- CONNECTION INFO -->
+        <section class="info">
+
+            <div class="connection">
+
+                <span class="connection-dot"></span>
+
+                <span>
+                    WebRTC Viewer
+                </span>
+
+            </div>
+
+            <div
+                class="session"
+                id="sessionDisplay"
+            >
+                Session: fpsmonitor-session
+            </div>
+
+        </section>
+
+    </main>
+
+
+    <script>
+        /*
+         * Display current session ID.
+         * app.js continues to handle WebRTC/signaling.
+         */
+
+        const params =
+            new URLSearchParams(
+                window.location.search
+            );
+
+        const session =
+            params.get("session") ||
+            params.get("sessionId") ||
+            "fpsmonitor-session";
+
+        const sessionDisplay =
+            document.getElementById(
+                "sessionDisplay"
+            );
+
+        if (sessionDisplay) {
+            sessionDisplay.textContent =
+                `Session: ${session}`;
+        }
+    </script>
+
+    <script src="app.js"></script>
+
+>>>>>>> 77ab91f (Update WebViewer UI and host status)
 </body>
 </html>
