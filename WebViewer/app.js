@@ -49,6 +49,12 @@ if (!sessionId) {
     connectSignaling();
 }
 
+<<<<<<< HEAD
+=======
+function connectSignaling() {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+   const wsURL = `${protocol}//${window.location.host}/ws`;
+>>>>>>> 8a19c12 (WebViewer + AppConfig deployment ready)
 
 // ============================================================
 // SIGNALING SERVER
