@@ -28,16 +28,83 @@ let renderedFrames = 0;
 let lastFPSCheck = performance.now();
 
 // ============================================================
-// WEBRTC CONFIG
+// WEBRTC CONFIG - STUN + TURN
 // ============================================================
 
-const rtcConfig = {
+let rtcConfig = {
     iceServers: [
         {
             urls: "stun:stun.l.google.com:19302"
         }
     ]
 };
+
+// Fetch TURN credentials from Metered
+async function fetchTurnCredentials() {
+    try {
+        console.log("[ICE] 🔄 Fetching TURN credentials from Metered...");
+        
+        const response = await fetch(
+            "https://fpsmonitor-turn.metered.live/api/v1/turn/credentials?apiKey=64926152b434b88fcdf288be2869c08e12a1"
+        );
+        
+        console.log("[ICE] API Response Status:", response.status);
+        
+        if (!response.ok) {
+            throw new Error(`API returned ${response.status}`);
+        }
+        
+        const turnServers = await response.json();
+        console.log("[ICE] TURN Servers Received:", turnServers);
+        
+        if (Array.isArray(turnServers) && turnServers.length > 0) {
+            rtcConfig.iceServers = [
+                { urls: "stun:stun.l.google.com:19302" },
+                ...turnServers
+            ];
+            console.log("[ICE] ✅ Metered TURN Loaded! Config:", rtcConfig.iceServers);
+            return true;
+        } else {
+            console.warn("[ICE] ⚠️ No TURN servers returned");
+            return false;
+        }
+    } catch (error) {
+        console.error("[ICE] ❌ Metered TURN Fetch Failed:", error);
+        return false;
+    }
+}
+
+// Use fallback OpenRelay TURN
+function useFallbackTurn() {
+    console.log("[ICE] 🔄 Switching to fallback OpenRelay TURN...");
+    
+    rtcConfig.iceServers = [
+        { urls: "stun:stun.l.google.com:19302" },
+        {
+            urls: "turn:openrelay.metered.ca:443?transport=tcp",
+            username: "openrelayproject",
+            credential: "openrelayproject"
+        },
+        {
+            urls: "turn:openrelay.metered.ca:443?transport=udp",
+            username: "openrelayproject",
+            credential: "openrelayproject"
+        }
+    ];
+    console.log("[ICE] ✅ Fallback TURN Active! Config:", rtcConfig.iceServers);
+}
+
+// Initialize TURN on startup
+async function initializeTurn() {
+    console.log("[ICE] Starting TURN initialization...");
+    
+    const success = await fetchTurnCredentials();
+    
+    if (!success) {
+        console.warn("[ICE] Metered failed, using OpenRelay fallback");
+        useFallbackTurn();
+    }
+}
 
 // ============================================================
 // STATUS
@@ -52,12 +119,18 @@ function setStatus(message) {
 // START
 // ============================================================
 
-if (!sessionId) {
-    setStatus("Missing session ID");
-} else {
-    setStatus(`Connecting to session: ${sessionId}`);
-    connectSignaling();
+async function start() {
+    if (!sessionId) {
+        setStatus("Missing session ID");
+    } else {
+        setStatus("Initializing TURN...");
+        await initializeTurn();
+        setStatus(`Connecting to session: ${sessionId}`);
+        connectSignaling();
+    }
 }
+
+start();
 
 // ============================================================
 // WEBSOCKET SIGNALING
@@ -117,11 +190,10 @@ function connectSignaling() {
                     await handleRemoteCandidate(message);
                     break;
 
-               case "producer-left":
-    setStatus("Host disconnected");
-
-    stopPeerConnection();
-    break;
+                case "producer-left":
+                    setStatus("Host disconnected");
+                    stopPeerConnection();
+                    break;
 
                 case "error":
                     setStatus(
@@ -170,7 +242,7 @@ function connectSignaling() {
 
 async function createPeerConnection() {
 
-    console.log("[WebRTC] Creating PeerConnection");
+    console.log("[WebRTC] Creating PeerConnection with config:", rtcConfig);
 
     if (peerConnection) {
         console.log(
@@ -345,7 +417,7 @@ async function createPeerConnection() {
             case "failed":
 
                 setStatus(
-                    "WebRTC connection failed"
+                    "❌ WebRTC connection failed - Check console for details"
                 );
 
                 break;
@@ -400,7 +472,7 @@ async function createPeerConnection() {
             case "failed":
 
                 setStatus(
-                    "WebRTC connection failed"
+                    "❌ Connection failed"
                 );
 
                 break;
@@ -445,7 +517,7 @@ async function handleOffer(message) {
         producerId = message.fromId;
 
         console.log(
-            "[WebRTC] Offer received Host:",
+            "[WebRTC] Offer received from Host:",
             producerId
         );
 
