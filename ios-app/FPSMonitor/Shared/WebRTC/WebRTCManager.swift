@@ -39,11 +39,68 @@ final class WebRTCManager: NSObject {
     /// (symptom: black local preview, nothing sent to viewer either).
     private var capturerDelegate: RTCVideoCapturerDelegate?
 
-    private let iceServers: [RTCIceServer] = [
-        // STUN only — this app is designed for same-LAN use, so host/srflx
-        // candidates found on the local WiFi will typically be used directly.
+    // ============================================================
+    // ICE SERVERS (STUN + TURN via Metered API)
+    // ============================================================
+
+    private var iceServers: [RTCIceServer] = [
         RTCIceServer(urlStrings: ["stun:stun.l.google.com:19302"])
     ]
+
+    /// Fetch dynamic TURN credentials from Metered
+    private func fetchTurnCredentials(completion: @escaping () -> Void) {
+        let urlString = "https://fpsmonitor-turn.metered.live/api/v1/turn/credentials?apiKey=64926152b434b88fcdf288be2869c08e12a1"
+        guard let url = URL(string: urlString) else {
+            print("[WebRTCManager] Invalid TURN URL")
+            completion()
+            return
+        }
+        
+        URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
+            guard let self = self else { return }
+            
+            if let error = error {
+                print("[WebRTCManager] Failed to fetch TURN credentials: \(error)")
+                completion()
+                return
+            }
+            
+            guard let data = data else {
+                print("[WebRTCManager] No data received from TURN server")
+                completion()
+                return
+            }
+            
+            do {
+                if let turnServers = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                    print("[WebRTCManager] Fetched TURN servers: \(turnServers.count) servers")
+                    
+                    var allServers = [RTCIceServer(urlStrings: ["stun:stun.l.google.com:19302"])]
+                    
+                    for serverDict in turnServers {
+                        if let urls = serverDict["urls"] as? [String] {
+                            let username = serverDict["username"] as? String ?? ""
+                            let credential = serverDict["credential"] as? String ?? ""
+                            
+                            let iceServer = RTCIceServer(
+                                urlStrings: urls,
+                                username: username,
+                                credential: credential
+                            )
+                            allServers.append(iceServer)
+                            print("[WebRTCManager] Added TURN server: \(urls.first ?? "unknown")")
+                        }
+                    }
+                    
+                    self.iceServers = allServers
+                }
+            } catch {
+                print("[WebRTCManager] JSON parsing error: \(error)")
+            }
+            
+            completion()
+        }.resume()
+    }
 
     // MARK: - Local capture (Producer)
 
@@ -184,6 +241,12 @@ final class WebRTCManager: NSObject {
         peerConnections.values.forEach { $0.close() }
         peerConnections.removeAll()
         peerConnectionDelegates.removeAll()
+    }
+
+    // MARK: - Initialize with TURN credentials
+
+    func initializeTurnCredentials(completion: @escaping () -> Void) {
+        fetchTurnCredentials(completion: completion)
     }
 
     // MARK: - Producer: create offer for a new viewer
