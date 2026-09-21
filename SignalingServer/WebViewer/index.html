@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -8,9 +7,39 @@
         content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     >
 
-    <title>FPS Monitor Viewer</title>
+    <title>CALLITNOW</title>
 
     <style>
+        /* =========================
+           CONNECTION STATE COLORS
+           (body[data-state] switches these)
+        ========================= */
+
+        :root {
+            --state-color: #f59e0b;
+            --state-glow: rgba(245, 158, 11, 0.6);
+        }
+
+        body[data-state="connecting"] {
+            --state-color: #f59e0b;
+            --state-glow: rgba(245, 158, 11, 0.6);
+        }
+
+        body[data-state="connected"] {
+            --state-color: #22c55e;
+            --state-glow: rgba(34, 197, 94, 0.65);
+        }
+
+        body[data-state="disconnected"] {
+            --state-color: #ef4444;
+            --state-glow: rgba(239, 68, 68, 0.65);
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.35; }
+        }
+
         * {
             box-sizing: border-box;
             margin: 0;
@@ -68,8 +97,13 @@
             width: 12px;
             height: 12px;
             border-radius: 50%;
-            background: #22c55e;
-            box-shadow: 0 0 14px rgba(34, 197, 94, 0.65);
+            background: var(--state-color);
+            box-shadow: 0 0 14px var(--state-glow);
+            transition: background 0.25s ease, box-shadow 0.25s ease;
+        }
+
+        body[data-state="connecting"] .brand-dot {
+            animation: pulse 1.2s ease-in-out infinite;
         }
 
         .brand h1 {
@@ -143,10 +177,30 @@
 
         .status-badge {
             color: #ffffff;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* colored signal dot inside the status badge */
+        .status-badge::before {
+            content: "";
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            background: var(--state-color);
+            box-shadow: 0 0 10px var(--state-glow);
+            transition: background 0.25s ease, box-shadow 0.25s ease;
+        }
+
+        body[data-state="connecting"] .status-badge::before {
+            animation: pulse 1.2s ease-in-out infinite;
         }
 
         .fps-badge {
-            color: #22c55e;
+            color: var(--state-color);
+            transition: color 0.25s ease;
         }
 
         /* =========================
@@ -182,7 +236,19 @@
             width: 8px;
             height: 8px;
             border-radius: 50%;
-            background: #22c55e;
+            background: var(--state-color);
+            box-shadow: 0 0 8px var(--state-glow);
+            transition: background 0.25s ease, box-shadow 0.25s ease;
+        }
+
+        body[data-state="connecting"] .connection-dot {
+            animation: pulse 1.2s ease-in-out infinite;
+        }
+
+        #connectionText {
+            color: var(--state-color);
+            font-weight: 600;
+            transition: color 0.25s ease;
         }
 
         .session {
@@ -315,7 +381,7 @@
     </style>
 </head>
 
-<body>
+<body data-state="connecting">
 
     <main class="app">
 
@@ -325,7 +391,7 @@
             <div class="brand">
                 <span class="brand-dot"></span>
 
-                <h1>FPS Monitor</h1>
+                <h1>CALLITNOW</h1>
             </div>
 
             <span class="viewer-label">
@@ -375,9 +441,7 @@
 
                 <span class="connection-dot"></span>
 
-                <span>
-                    WebRTC Viewer
-                </span>
+                <span id="connectionText">Connecting...</span>
 
             </div>
 
@@ -418,6 +482,40 @@
             sessionDisplay.textContent =
                 `Session: ${session}`;
         }
+    </script>
+
+
+    <script>
+        /*
+         * CONNECTION STATE (green = connected, red = disconnected,
+         * amber = connecting).
+         *
+         * app.js calls:
+         *   window.setConnectionState("connected" | "disconnected" | "connecting")
+         *
+         * Yeh function sirf colors + neeche wala text badalta hai.
+         * Upar wale status badge ka text app.js khud set karta hai (setStatus).
+         */
+
+        (function () {
+
+            const LABELS = {
+                connecting: "Connecting...",
+                connected: "Connected",
+                disconnected: "Disconnected"
+            };
+
+            const textEl = document.getElementById("connectionText");
+
+            window.setConnectionState = function (state) {
+                if (!LABELS[state]) return;
+
+                document.body.dataset.state = state;
+
+                if (textEl) textEl.textContent = LABELS[state];
+            };
+
+        })();
     </script>
 
     <script src="app.js"></script>

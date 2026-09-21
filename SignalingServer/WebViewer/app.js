@@ -116,13 +116,40 @@ function setStatus(message) {
 }
 
 // ============================================================
+// CONNECTION UI STATE
+//
+//   "connected"    -> green dot  (host video is connected)
+//   "disconnected" -> red dot    (host left / connection lost)
+//   "connecting"   -> amber dot  (waiting / negotiating)
+//
+// The actual colors + bottom "Connected/Disconnected" text are
+// handled by window.setConnectionState() in index.html.
+// ============================================================
+
+let uiConnectionState = "connecting";
+
+function updateConnectionUI(state) {
+    uiConnectionState = state;
+
+    if (typeof window.setConnectionState === "function") {
+        window.setConnectionState(state);
+    }
+
+    if (state !== "connected") {
+        fpsElement.textContent = "FPS: --";
+    }
+}
+
+// ============================================================
 // START
 // ============================================================
 
 async function start() {
     if (!sessionId) {
         setStatus("Missing session ID");
+        updateConnectionUI("disconnected");
     } else {
+        updateConnectionUI("connecting");
         setStatus("Initializing TURN...");
         await initializeTurn();
         setStatus(`Connecting to session: ${sessionId}`);
@@ -177,6 +204,7 @@ function connectSignaling() {
                     break;
 
                 case "producer-available":
+                    updateConnectionUI("connecting");
                     setStatus(
                         "Host available. Waiting for video..."
                     );
@@ -191,8 +219,9 @@ function connectSignaling() {
                     break;
 
                 case "producer-left":
-                    setStatus("Host disconnected");
                     stopPeerConnection();
+                    updateConnectionUI("disconnected");
+                    setStatus("Host disconnected");
                     break;
 
                 case "error":
@@ -222,6 +251,14 @@ function connectSignaling() {
     socket.onerror = (error) => {
         console.error("[WS] Error:", error);
 
+        // If video is not live, a signaling error means we are disconnected.
+        if (
+            !peerConnection ||
+            peerConnection.connectionState !== "connected"
+        ) {
+            updateConnectionUI("disconnected");
+        }
+
         setStatus(
             "WebSocket connection error"
         );
@@ -229,6 +266,14 @@ function connectSignaling() {
 
     socket.onclose = () => {
         console.log("[WS] Disconnected");
+
+        // If the video is still live over WebRTC, keep showing "Connected".
+        if (
+            !peerConnection ||
+            peerConnection.connectionState !== "connected"
+        ) {
+            updateConnectionUI("disconnected");
+        }
 
         setStatus(
             "Signaling server disconnected"
@@ -288,6 +333,7 @@ async function createPeerConnection() {
                     "[Video] Playback started"
                 );
 
+                updateConnectionUI("connected");
                 setStatus("LIVE");
 
             })
@@ -298,6 +344,7 @@ async function createPeerConnection() {
                     error
                 );
 
+                updateConnectionUI("connected");
                 setStatus(
                     "Tap the video to start playback"
                 );
@@ -380,6 +427,7 @@ async function createPeerConnection() {
 
             case "new":
 
+                updateConnectionUI("connecting");
                 setStatus(
                     "Preparing video connection..."
                 );
@@ -388,6 +436,7 @@ async function createPeerConnection() {
 
             case "checking":
 
+                updateConnectionUI("connecting");
                 setStatus(
                     "Connecting video..."
                 );
@@ -396,18 +445,21 @@ async function createPeerConnection() {
 
             case "connected":
 
+                updateConnectionUI("connected");
                 setStatus("LIVE");
 
                 break;
 
             case "completed":
 
+                updateConnectionUI("connected");
                 setStatus("LIVE");
 
                 break;
 
             case "disconnected":
 
+                updateConnectionUI("disconnected");
                 setStatus(
                     "Video connection disconnected"
                 );
@@ -416,6 +468,7 @@ async function createPeerConnection() {
 
             case "failed":
 
+                updateConnectionUI("disconnected");
                 setStatus(
                     "❌ WebRTC connection failed - Check console for details"
                 );
@@ -424,6 +477,7 @@ async function createPeerConnection() {
 
             case "closed":
 
+                updateConnectionUI("disconnected");
                 setStatus(
                     "Video connection closed"
                 );
@@ -449,12 +503,14 @@ async function createPeerConnection() {
 
             case "connected":
 
+                updateConnectionUI("connected");
                 setStatus("LIVE");
 
                 break;
 
             case "connecting":
 
+                updateConnectionUI("connecting");
                 setStatus(
                     "Connecting video..."
                 );
@@ -463,6 +519,7 @@ async function createPeerConnection() {
 
             case "disconnected":
 
+                updateConnectionUI("disconnected");
                 setStatus(
                     "Video connection disconnected"
                 );
@@ -471,6 +528,7 @@ async function createPeerConnection() {
 
             case "failed":
 
+                updateConnectionUI("disconnected");
                 setStatus(
                     "❌ Connection failed"
                 );
@@ -479,6 +537,7 @@ async function createPeerConnection() {
 
             case "closed":
 
+                updateConnectionUI("disconnected");
                 setStatus(
                     "Video connection closed"
                 );
@@ -520,6 +579,8 @@ async function handleOffer(message) {
             "[WebRTC] Offer received from Host:",
             producerId
         );
+
+        updateConnectionUI("connecting");
 
         // Reset old ICE candidates for this new connection.
         pendingIceCandidates = [];
@@ -586,6 +647,7 @@ async function handleOffer(message) {
                 "[WebRTC] WebSocket is not connected"
             );
 
+            updateConnectionUI("disconnected");
             setStatus(
                 "Signaling connection lost"
             );
@@ -598,6 +660,7 @@ async function handleOffer(message) {
             error
         );
 
+        updateConnectionUI("disconnected");
         setStatus(
             "Failed to establish WebRTC connection"
         );
@@ -744,6 +807,9 @@ function stopPeerConnection() {
     videoElement.srcObject = null;
 
     producerId = null;
+
+    // Handlers are removed above, so update the UI explicitly.
+    updateConnectionUI("disconnected");
 }
 
 // ============================================================
@@ -762,8 +828,11 @@ function updateFPS() {
         const fps =
             renderedFrames * 1000 / elapsed;
 
+        // Only show a real FPS number while connected.
         fpsElement.textContent =
-            `FPS: ${fps.toFixed(1)}`;
+            uiConnectionState === "connected"
+                ? `FPS: ${fps.toFixed(1)}`
+                : "FPS: --";
 
         renderedFrames = 0;
 

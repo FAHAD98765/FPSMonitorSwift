@@ -52,7 +52,7 @@ async function fetchTurnCredentials() {
 // ============================================================
 
 function setStatus(message) {
-    statusElement.textContent = message;
+   
     console.log("[WebViewer]", message);
 }
 
