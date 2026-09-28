@@ -1,8 +1,7 @@
 const viewerParams = new URLSearchParams(window.location.search);
 
 const sessionId =
-    viewerParams.get("session")
- ||
+    viewerParams.get("session") ||
     viewerParams.get("sessionId") ||
     "fpsmonitor-session";
 
@@ -43,20 +42,20 @@ let rtcConfig = {
 async function fetchTurnCredentials() {
     try {
         console.log("[ICE] 🔄 Fetching TURN credentials from Metered...");
-        
+
         const response = await fetch(
             "https://fpsmonitor-turn.metered.live/api/v1/turn/credentials?apiKey=64926152b434b88fcdf288be2869c08e12a1"
         );
-        
+
         console.log("[ICE] API Response Status:", response.status);
-        
+
         if (!response.ok) {
             throw new Error(`API returned ${response.status}`);
         }
-        
+
         const turnServers = await response.json();
         console.log("[ICE] TURN Servers Received:", turnServers);
-        
+
         if (Array.isArray(turnServers) && turnServers.length > 0) {
             rtcConfig.iceServers = [
                 { urls: "stun:stun.l.google.com:19302" },
@@ -77,7 +76,7 @@ async function fetchTurnCredentials() {
 // Use fallback OpenRelay TURN
 function useFallbackTurn() {
     console.log("[ICE] 🔄 Switching to fallback OpenRelay TURN...");
-    
+
     rtcConfig.iceServers = [
         { urls: "stun:stun.l.google.com:19302" },
         {
@@ -97,9 +96,9 @@ function useFallbackTurn() {
 // Initialize TURN on startup
 async function initializeTurn() {
     console.log("[ICE] Starting TURN initialization...");
-    
+
     const success = await fetchTurnCredentials();
-    
+
     if (!success) {
         console.warn("[ICE] Metered failed, using OpenRelay fallback");
         useFallbackTurn();
@@ -889,7 +888,8 @@ requestAnimationFrame(
 );
 
 // ============================================================
-// LINE CALL (polls the tracknet API, shows IN / OUT for 1 second)
+// LINE CALL (polls the tracknet API, shows IN / OUT / UNCERTAIN
+// as a small badge top-right, in place of FPS, for 1 second)
 // ============================================================
 
 // NOTE: page HTTPS pe ho to browser http:// API ko block kar deta hai
@@ -901,18 +901,24 @@ const LINECALL_SHOW_MS = 1000;  // line call kitni dair screen par rahe
 const lineCallElement = document.getElementById("lineCall");
 const lineCallResultElement = document.getElementById("lineCallResult");
 const lineCallDetailElement = document.getElementById("lineCallDetail");
+const videoCardElement = lineCallElement.closest(".video-card");
 
 let lastLineCallEventId = null;
 let lineCallFirstPoll = true;
 let lineCallHideTimer = null;
 let lineCallRequestInFlight = false;
 
+function hideLineCall() {
+    lineCallElement.classList.remove("show");
+    videoCardElement.classList.remove("call-active");
+}
+
 function showLineCall(event) {
 
     const result = String(event.in_out || "").toLowerCase();
 
     lineCallElement.dataset.result =
-        result === "in" || result === "out" ? result : "";
+        ["in", "out", "uncertain"].includes(result) ? result : "";
 
     lineCallResultElement.textContent =
         result ? result.toUpperCase() : String(event.type || "EVENT").toUpperCase();
@@ -930,13 +936,11 @@ function showLineCall(event) {
     lineCallDetailElement.textContent = details.join(" \u00b7 ");
 
     lineCallElement.classList.add("show");
+    videoCardElement.classList.add("call-active");   // FPS badge chhupao
 
-    // New event aaye to timer dobara 1 second se shuru
+    // Naya event aaye to timer dobara 1 second se shuru
     clearTimeout(lineCallHideTimer);
-
-    lineCallHideTimer = setTimeout(() => {
-        lineCallElement.classList.remove("show");
-    }, LINECALL_SHOW_MS);
+    lineCallHideTimer = setTimeout(hideLineCall, LINECALL_SHOW_MS);
 }
 
 async function pollLineCall() {
