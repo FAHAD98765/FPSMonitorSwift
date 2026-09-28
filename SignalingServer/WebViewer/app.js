@@ -1,4 +1,3 @@
-```javascript
 const viewerParams = new URLSearchParams(window.location.search);
 
 const sessionId =
@@ -1661,4 +1660,4 @@ window.addEventListener(
         }
     }
 );
-```
+
