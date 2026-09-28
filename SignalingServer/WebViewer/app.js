@@ -1,3 +1,4 @@
+```javascript
 const viewerParams = new URLSearchParams(window.location.search);
 
 const sessionId =
@@ -38,7 +39,10 @@ let rtcConfig = {
     ]
 };
 
-// Fetch TURN credentials from Metered
+// ============================================================
+// TURN - METERED
+// ============================================================
+
 async function fetchTurnCredentials() {
     try {
         console.log("[ICE] 🔄 Fetching TURN credentials from Metered...");
@@ -54,31 +58,62 @@ async function fetchTurnCredentials() {
         }
 
         const turnServers = await response.json();
-        console.log("[ICE] TURN Servers Received:", turnServers);
 
-        if (Array.isArray(turnServers) && turnServers.length > 0) {
+        console.log(
+            "[ICE] TURN Servers Received:",
+            turnServers
+        );
+
+        if (
+            Array.isArray(turnServers) &&
+            turnServers.length > 0
+        ) {
             rtcConfig.iceServers = [
-                { urls: "stun:stun.l.google.com:19302" },
+                {
+                    urls: "stun:stun.l.google.com:19302"
+                },
                 ...turnServers
             ];
-            console.log("[ICE] ✅ Metered TURN Loaded! Config:", rtcConfig.iceServers);
+
+            console.log(
+                "[ICE] ✅ Metered TURN Loaded! Config:",
+                rtcConfig.iceServers
+            );
+
             return true;
-        } else {
-            console.warn("[ICE] ⚠️ No TURN servers returned");
-            return false;
         }
+
+        console.warn(
+            "[ICE] ⚠️ No TURN servers returned"
+        );
+
+        return false;
+
     } catch (error) {
-        console.error("[ICE] ❌ Metered TURN Fetch Failed:", error);
+
+        console.error(
+            "[ICE] ❌ Metered TURN Fetch Failed:",
+            error
+        );
+
         return false;
     }
 }
 
-// Use fallback OpenRelay TURN
+// ============================================================
+// FALLBACK TURN
+// ============================================================
+
 function useFallbackTurn() {
-    console.log("[ICE] 🔄 Switching to fallback OpenRelay TURN...");
+
+    console.log(
+        "[ICE] 🔄 Switching to fallback OpenRelay TURN..."
+    );
 
     rtcConfig.iceServers = [
-        { urls: "stun:stun.l.google.com:19302" },
+        {
+            urls: "stun:stun.l.google.com:19302"
+        },
         {
             urls: "turn:openrelay.metered.ca:443?transport=tcp",
             username: "openrelayproject",
@@ -90,17 +125,32 @@ function useFallbackTurn() {
             credential: "openrelayproject"
         }
     ];
-    console.log("[ICE] ✅ Fallback TURN Active! Config:", rtcConfig.iceServers);
+
+    console.log(
+        "[ICE] ✅ Fallback TURN Active! Config:",
+        rtcConfig.iceServers
+    );
 }
 
-// Initialize TURN on startup
-async function initializeTurn() {
-    console.log("[ICE] Starting TURN initialization...");
+// ============================================================
+// INITIALIZE TURN
+// ============================================================
 
-    const success = await fetchTurnCredentials();
+async function initializeTurn() {
+
+    console.log(
+        "[ICE] Starting TURN initialization..."
+    );
+
+    const success =
+        await fetchTurnCredentials();
 
     if (!success) {
-        console.warn("[ICE] Metered failed, using OpenRelay fallback");
+
+        console.warn(
+            "[ICE] Metered failed, using OpenRelay fallback"
+        );
+
         useFallbackTurn();
     }
 }
@@ -110,31 +160,37 @@ async function initializeTurn() {
 // ============================================================
 
 function setStatus(message) {
+
     statusElement.textContent = message;
-    console.log("[WebViewer]", message);
+
+    console.log(
+        "[WebViewer]",
+        message
+    );
 }
 
 // ============================================================
-// CONNECTION UI STATE
+// CONNECTION UI
 //
-//   "connected"    -> green dot  (host video is connected)
-//   "disconnected" -> red dot    (host left / connection lost)
-//   "connecting"   -> amber dot  (waiting / negotiating)
-//
-// The actual colors + bottom "Connected/Disconnected" text are
-// handled by window.setConnectionState() in index.html.
+// connected    -> green
+// disconnected -> red
+// connecting   -> amber
 // ============================================================
 
 let uiConnectionState = "connecting";
 
 function updateConnectionUI(state) {
+
     uiConnectionState = state;
 
-    if (typeof window.setConnectionState === "function") {
+    if (
+        typeof window.setConnectionState === "function"
+    ) {
         window.setConnectionState(state);
     }
 
     if (state !== "connected") {
+
         fpsElement.textContent = "FPS: --";
     }
 }
@@ -144,16 +200,40 @@ function updateConnectionUI(state) {
 // ============================================================
 
 async function start() {
+
     if (!sessionId) {
-        setStatus("Missing session ID");
-        updateConnectionUI("disconnected");
-    } else {
-        updateConnectionUI("connecting");
-        setStatus("Initializing TURN...");
-        await initializeTurn();
-        setStatus(`Connecting to session: ${sessionId}`);
-        connectSignaling();
+
+        setStatus(
+            "Missing session ID"
+        );
+
+        updateConnectionUI(
+            "disconnected"
+        );
+
+        return;
     }
+
+    console.log(
+        "[Session] Using Session ID:",
+        sessionId
+    );
+
+    updateConnectionUI(
+        "connecting"
+    );
+
+    setStatus(
+        "Initializing TURN..."
+    );
+
+    await initializeTurn();
+
+    setStatus(
+        `Connecting to session: ${sessionId}`
+    );
+
+    connectSignaling();
 }
 
 start();
@@ -163,24 +243,35 @@ start();
 // ============================================================
 
 function connectSignaling() {
+
     const protocol =
-        window.location.protocol === "https:" ? "wss:" : "ws:";
+        window.location.protocol === "https:"
+            ? "wss:"
+            : "ws:";
 
     const wsURL =
         `${protocol}//${window.location.host}`;
 
-    console.log("[WS] Connecting:", wsURL);
+    console.log(
+        "[WS] Connecting:",
+        wsURL
+    );
 
     socket = new WebSocket(wsURL);
 
     socket.onopen = () => {
-        console.log("[WS] Connected");
 
-        socket.send(JSON.stringify({
-            type: "register",
-            sessionId: sessionId,
-            role: "viewer"
-        }));
+        console.log(
+            "[WS] Connected"
+        );
+
+        socket.send(
+            JSON.stringify({
+                type: "register",
+                sessionId: sessionId,
+                role: "viewer"
+            })
+        );
 
         setStatus(
             "Connected to signaling server. Waiting for host..."
@@ -188,51 +279,85 @@ function connectSignaling() {
     };
 
     socket.onmessage = async (event) => {
-        try {
-            const message = JSON.parse(event.data);
 
-            console.log("[WS] Message:", message.type, message);
+        try {
+
+            const message =
+                JSON.parse(event.data);
+
+            console.log(
+                "[WS] Message:",
+                message.type,
+                message
+            );
 
             switch (message.type) {
 
                 case "registered":
+
                     console.log(
                         "[WS] Registered as viewer:",
                         message.clientId
                     );
+
                     break;
 
                 case "producer-available":
-                    updateConnectionUI("connecting");
+
+                    updateConnectionUI(
+                        "connecting"
+                    );
+
                     setStatus(
                         "Host available. Waiting for video..."
                     );
+
                     break;
 
                 case "offer":
-                    await handleOffer(message);
+
+                    await handleOffer(
+                        message
+                    );
+
                     break;
 
                 case "ice-candidate":
-                    await handleRemoteCandidate(message);
+
+                    await handleRemoteCandidate(
+                        message
+                    );
+
                     break;
 
                 case "producer-left":
+
                     stopPeerConnection();
-                    updateConnectionUI("disconnected");
-                    setStatus("Host disconnected");
+
+                    updateConnectionUI(
+                        "disconnected"
+                    );
+
+                    setStatus(
+                        "Host disconnected"
+                    );
+
                     break;
 
                 case "error":
+
                     setStatus(
                         `Server error: ${message.message}`
                     );
+
                     break;
 
                 case "pong":
+
                     break;
 
                 default:
+
                     console.log(
                         "[WS] Unknown message:",
                         message
@@ -240,6 +365,7 @@ function connectSignaling() {
             }
 
         } catch (error) {
+
             console.error(
                 "[WS] Message handling error:",
                 error
@@ -248,14 +374,24 @@ function connectSignaling() {
     };
 
     socket.onerror = (error) => {
-        console.error("[WS] Error:", error);
 
-        // If video is not live, a signaling error means we are disconnected.
+        console.error(
+            "[WS] Error:",
+            error
+        );
+
         if (
             !peerConnection ||
             peerConnection.connectionState !== "connected"
         ) {
-            updateConnectionUI("disconnected");
+
+            updateConnectionUI(
+                "disconnected"
+            );
+
+            // IMPORTANT:
+            // Stop API polling when connection is lost.
+            stopLineCallPolling();
         }
 
         setStatus(
@@ -264,14 +400,23 @@ function connectSignaling() {
     };
 
     socket.onclose = () => {
-        console.log("[WS] Disconnected");
 
-        // If the video is still live over WebRTC, keep showing "Connected".
+        console.log(
+            "[WS] Disconnected"
+        );
+
         if (
             !peerConnection ||
             peerConnection.connectionState !== "connected"
         ) {
-            updateConnectionUI("disconnected");
+
+            updateConnectionUI(
+                "disconnected"
+            );
+
+            // IMPORTANT:
+            // Stop API polling when connection is lost.
+            stopLineCallPolling();
         }
 
         setStatus(
@@ -286,9 +431,13 @@ function connectSignaling() {
 
 async function createPeerConnection() {
 
-    console.log("[WebRTC] Creating PeerConnection with config:", rtcConfig);
+    console.log(
+        "[WebRTC] Creating PeerConnection with config:",
+        rtcConfig
+    );
 
     if (peerConnection) {
+
         console.log(
             "[WebRTC] Closing previous PeerConnection"
         );
@@ -296,7 +445,10 @@ async function createPeerConnection() {
         peerConnection.close();
     }
 
-    peerConnection = new RTCPeerConnection(rtcConfig);
+    peerConnection =
+        new RTCPeerConnection(
+            rtcConfig
+        );
 
     // --------------------------------------------------------
     // REMOTE TRACK
@@ -313,15 +465,19 @@ async function createPeerConnection() {
             event.streams &&
             event.streams.length > 0
         ) {
+
             videoElement.srcObject =
                 event.streams[0];
 
         } else {
 
             const stream =
-                new MediaStream([event.track]);
+                new MediaStream([
+                    event.track
+                ]);
 
-            videoElement.srcObject = stream;
+            videoElement.srcObject =
+                stream;
         }
 
         videoElement
@@ -332,8 +488,20 @@ async function createPeerConnection() {
                     "[Video] Playback started"
                 );
 
-                updateConnectionUI("connected");
-                setStatus("LIVE");
+                updateConnectionUI(
+                    "connected"
+                );
+
+                setStatus(
+                    "LIVE"
+                );
+
+                // ====================================================
+                // IMPORTANT:
+                // User/Host connected -> START API POLLING
+                // ====================================================
+
+                startLineCallPolling();
 
             })
             .catch((error) => {
@@ -343,10 +511,16 @@ async function createPeerConnection() {
                     error
                 );
 
-                updateConnectionUI("connected");
+                updateConnectionUI(
+                    "connected"
+                );
+
                 setStatus(
                     "Tap the video to start playback"
                 );
+
+                // Start API polling because WebRTC is connected.
+                startLineCallPolling();
             });
     };
 
@@ -374,6 +548,7 @@ async function createPeerConnection() {
             !socket ||
             socket.readyState !== WebSocket.OPEN
         ) {
+
             console.warn(
                 "[ICE] WebSocket not ready; local candidate cannot be sent"
             );
@@ -381,20 +556,22 @@ async function createPeerConnection() {
             return;
         }
 
-        socket.send(JSON.stringify({
-            type: "ice-candidate",
-            sessionId: sessionId,
-            targetId: producerId,
+        socket.send(
+            JSON.stringify({
+                type: "ice-candidate",
+                sessionId: sessionId,
+                targetId: producerId,
 
-            sdpMLineIndex:
-                event.candidate.sdpMLineIndex,
+                sdpMLineIndex:
+                    event.candidate.sdpMLineIndex,
 
-            sdpMid:
-                event.candidate.sdpMid,
+                sdpMid:
+                    event.candidate.sdpMid,
 
-            candidate:
-                event.candidate.candidate
-        }));
+                candidate:
+                    event.candidate.candidate
+            })
+        );
     };
 
     // --------------------------------------------------------
@@ -426,7 +603,10 @@ async function createPeerConnection() {
 
             case "new":
 
-                updateConnectionUI("connecting");
+                updateConnectionUI(
+                    "connecting"
+                );
+
                 setStatus(
                     "Preparing video connection..."
                 );
@@ -435,7 +615,10 @@ async function createPeerConnection() {
 
             case "checking":
 
-                updateConnectionUI("connecting");
+                updateConnectionUI(
+                    "connecting"
+                );
+
                 setStatus(
                     "Connecting video..."
                 );
@@ -444,42 +627,83 @@ async function createPeerConnection() {
 
             case "connected":
 
-                updateConnectionUI("connected");
-                setStatus("LIVE");
+                updateConnectionUI(
+                    "connected"
+                );
+
+                setStatus(
+                    "LIVE"
+                );
+
+                // ====================================================
+                // IMPORTANT:
+                // WebRTC connected -> START API
+                // ====================================================
+
+                startLineCallPolling();
 
                 break;
 
             case "completed":
 
-                updateConnectionUI("connected");
-                setStatus("LIVE");
+                updateConnectionUI(
+                    "connected"
+                );
+
+                setStatus(
+                    "LIVE"
+                );
+
+                startLineCallPolling();
 
                 break;
 
             case "disconnected":
 
-                updateConnectionUI("disconnected");
+                updateConnectionUI(
+                    "disconnected"
+                );
+
                 setStatus(
                     "Video connection disconnected"
                 );
+
+                // ====================================================
+                // IMPORTANT:
+                // WebRTC disconnected -> STOP API
+                // ====================================================
+
+                stopLineCallPolling();
 
                 break;
 
             case "failed":
 
-                updateConnectionUI("disconnected");
+                updateConnectionUI(
+                    "disconnected"
+                );
+
                 setStatus(
                     "❌ WebRTC connection failed - Check console for details"
                 );
+
+                // Stop API polling.
+                stopLineCallPolling();
 
                 break;
 
             case "closed":
 
-                updateConnectionUI("disconnected");
+                updateConnectionUI(
+                    "disconnected"
+                );
+
                 setStatus(
                     "Video connection closed"
                 );
+
+                // Stop API polling.
+                stopLineCallPolling();
 
                 break;
         }
@@ -502,14 +726,29 @@ async function createPeerConnection() {
 
             case "connected":
 
-                updateConnectionUI("connected");
-                setStatus("LIVE");
+                updateConnectionUI(
+                    "connected"
+                );
+
+                setStatus(
+                    "LIVE"
+                );
+
+                // ====================================================
+                // IMPORTANT:
+                // USER CONNECTED -> API START
+                // ====================================================
+
+                startLineCallPolling();
 
                 break;
 
             case "connecting":
 
-                updateConnectionUI("connecting");
+                updateConnectionUI(
+                    "connecting"
+                );
+
                 setStatus(
                     "Connecting video..."
                 );
@@ -518,28 +757,50 @@ async function createPeerConnection() {
 
             case "disconnected":
 
-                updateConnectionUI("disconnected");
+                updateConnectionUI(
+                    "disconnected"
+                );
+
                 setStatus(
                     "Video connection disconnected"
                 );
+
+                // ====================================================
+                // IMPORTANT:
+                // USER DISCONNECTED -> API STOP
+                // ====================================================
+
+                stopLineCallPolling();
 
                 break;
 
             case "failed":
 
-                updateConnectionUI("disconnected");
+                updateConnectionUI(
+                    "disconnected"
+                );
+
                 setStatus(
                     "❌ Connection failed"
                 );
+
+                // Stop API polling.
+                stopLineCallPolling();
 
                 break;
 
             case "closed":
 
-                updateConnectionUI("disconnected");
+                updateConnectionUI(
+                    "disconnected"
+                );
+
                 setStatus(
                     "Video connection closed"
                 );
+
+                // Stop API polling.
+                stopLineCallPolling();
 
                 break;
         }
@@ -572,16 +833,19 @@ async function handleOffer(message) {
 
     try {
 
-        producerId = message.fromId;
+        producerId =
+            message.fromId;
 
         console.log(
             "[WebRTC] Offer received from Host:",
             producerId
         );
 
-        updateConnectionUI("connecting");
+        updateConnectionUI(
+            "connecting"
+        );
 
-        // Reset old ICE candidates for this new connection.
+        // Reset old ICE candidates.
         pendingIceCandidates = [];
 
         await createPeerConnection();
@@ -601,8 +865,6 @@ async function handleOffer(message) {
             "[WebRTC] Remote description set"
         );
 
-        // Some candidates may have arrived while
-        // setRemoteDescription was being processed.
         await flushPendingIceCandidates();
 
         console.log(
@@ -625,12 +887,14 @@ async function handleOffer(message) {
             socket.readyState === WebSocket.OPEN
         ) {
 
-            socket.send(JSON.stringify({
-                type: "answer",
-                sessionId: sessionId,
-                targetId: producerId,
-                sdp: answer.sdp
-            }));
+            socket.send(
+                JSON.stringify({
+                    type: "answer",
+                    sessionId: sessionId,
+                    targetId: producerId,
+                    sdp: answer.sdp
+                })
+            );
 
             console.log(
                 "[WebRTC] Answer sent to producer"
@@ -646,10 +910,15 @@ async function handleOffer(message) {
                 "[WebRTC] WebSocket is not connected"
             );
 
-            updateConnectionUI("disconnected");
+            updateConnectionUI(
+                "disconnected"
+            );
+
             setStatus(
                 "Signaling connection lost"
             );
+
+            stopLineCallPolling();
         }
 
     } catch (error) {
@@ -659,10 +928,15 @@ async function handleOffer(message) {
             error
         );
 
-        updateConnectionUI("disconnected");
+        updateConnectionUI(
+            "disconnected"
+        );
+
         setStatus(
             "Failed to establish WebRTC connection"
         );
+
+        stopLineCallPolling();
     }
 }
 
@@ -679,15 +953,21 @@ async function handleRemoteCandidate(message) {
             message.candidate
         );
 
-        const candidate = new RTCIceCandidate({
-            candidate: message.candidate,
-            sdpMid: message.sdpMid,
-            sdpMLineIndex: message.sdpMLineIndex
-        });
+        const candidate =
+            new RTCIceCandidate({
+                candidate:
+                    message.candidate,
+
+                sdpMid:
+                    message.sdpMid,
+
+                sdpMLineIndex:
+                    message.sdpMLineIndex
+            });
 
         // ----------------------------------------------------
         // If PeerConnection or remote description isn't ready,
-        // queue the candidate instead of losing it.
+        // queue the candidate.
         // ----------------------------------------------------
 
         if (
@@ -703,7 +983,9 @@ async function handleRemoteCandidate(message) {
                 "[ICE] Queueing remote candidate."
             );
 
-            pendingIceCandidates.push(candidate);
+            pendingIceCandidates.push(
+                candidate
+            );
 
             return;
         }
@@ -789,6 +1071,10 @@ function stopPeerConnection() {
         "[WebRTC] Stopping PeerConnection"
     );
 
+    // IMPORTANT:
+    // Stop API immediately when PeerConnection stops.
+    stopLineCallPolling();
+
     if (peerConnection) {
 
         peerConnection.ontrack = null;
@@ -807,8 +1093,9 @@ function stopPeerConnection() {
 
     producerId = null;
 
-    // Handlers are removed above, so update the UI explicitly.
-    updateConnectionUI("disconnected");
+    updateConnectionUI(
+        "disconnected"
+    );
 }
 
 // ============================================================
@@ -817,7 +1104,8 @@ function stopPeerConnection() {
 
 function updateFPS() {
 
-    const now = performance.now();
+    const now =
+        performance.now();
 
     const elapsed =
         now - lastFPSCheck;
@@ -827,7 +1115,6 @@ function updateFPS() {
         const fps =
             renderedFrames * 1000 / elapsed;
 
-        // Only show a real FPS number while connected.
         fpsElement.textContent =
             uiConnectionState === "connected"
                 ? `FPS: ${fps.toFixed(1)}`
@@ -888,78 +1175,174 @@ requestAnimationFrame(
 );
 
 // ============================================================
-// LINE CALL
+// LINE CALL API
 //
-// - API continuously hit hoti rehti hai (ek response aate hi
-//   agli request foran, koi fixed 500ms wait nahi).
-// - Naya event API se aate hi FORAN display hota hai (koi frame/timer
-//   wait nahi), FPS badge ke neeche, LINECALL_SHOW_MS ke baad hat jata hai.
+// IMPORTANT BEHAVIOR:
+//
+// CONNECTED:
+//   API continuously hit hoti hai.
+//
+// DISCONNECTED:
+//   API polling completely stop hoti hai.
+//   Current request bhi abort hoti hai.
+//
+// RECONNECTED:
+//   API polling dobara start hoti hai.
+//
+// Session ID:
+//   URL se jo ONE sessionId mili hai, wahi use hoti hai.
 // ============================================================
 
-// NOTE: page HTTPS pe ho to browser http:// API ko block kar deta hai
-// (mixed content). Us surat mein yahan apne server ka proxy path do.
-const LINECALL_API_BASE = "http://13.60.246.31:8000";
-const LINECALL_SHOW_MS = 1000;            // badge kitni dair rahe
-const LINECALL_MIN_GAP_MS = 0;            // 2 requests ke beech minimum gap (0 = back-to-back)
-const LINECALL_ERROR_RETRY_MS = 300;      // network error par dobara try
-const LINECALL_REQUEST_TIMEOUT_MS = 2000; // atki hui request jaldi cancel
+const LINECALL_API_BASE =
+    "http://13.60.246.31:8000";
 
-const lineCallElement = document.getElementById("lineCall");
-const lineCallResultElement = document.getElementById("lineCallResult");
-const lineCallDetailElement = document.getElementById("lineCallDetail");
+const LINECALL_SHOW_MS =
+    1000;
+
+const LINECALL_MIN_GAP_MS =
+    0;
+
+const LINECALL_ERROR_RETRY_MS =
+    300;
+
+const LINECALL_REQUEST_TIMEOUT_MS =
+    2000;
+
+const lineCallElement =
+    document.getElementById("lineCall");
+
+const lineCallResultElement =
+    document.getElementById("lineCallResult");
+
+const lineCallDetailElement =
+    document.getElementById("lineCallDetail");
+
+// ============================================================
+// LINE CALL STATE
+// ============================================================
 
 let lastLineCallEventId = null;
+
 let lineCallFirstPoll = true;
+
 let lineCallHideTimer = null;
 
+// IMPORTANT:
+// This is NOT a Session ID.
+// This only controls whether the API polling loop is running.
+let lineCallLoopRunning = false;
+
+// Current API request controller.
+// Used to immediately cancel request on disconnect.
+let activeLineCallController = null;
+
+// ============================================================
+// SLEEP
+// ============================================================
+
 function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+
+    return new Promise(
+        (resolve) => setTimeout(
+            resolve,
+            ms
+        )
+    );
 }
 
-// ---------- DISPLAY ----------
+// ============================================================
+// DISPLAY
+// ============================================================
 
 function hideLineCall() {
-    lineCallElement.classList.remove("show");
+
+    lineCallElement.classList.remove(
+        "show"
+    );
 }
 
 function showLineCall(event) {
 
-    const result = String(event.in_out || "").toLowerCase();
+    const result =
+        String(
+            event.in_out || ""
+        ).toLowerCase();
 
     lineCallElement.dataset.result =
-        ["in", "out", "uncertain"].includes(result) ? result : "";
+        [
+            "in",
+            "out",
+            "uncertain"
+        ].includes(result)
+            ? result
+            : "";
 
     lineCallResultElement.textContent =
-        result ? result.toUpperCase() : String(event.type || "EVENT").toUpperCase();
+        result
+            ? result.toUpperCase()
+            : String(
+                event.type || "EVENT"
+            ).toUpperCase();
 
     const details = [];
 
     if (event.nearest_line) {
-        details.push(event.nearest_line);
+
+        details.push(
+            event.nearest_line
+        );
     }
 
-    if (typeof event.nearest_line_distance === "number") {
-        details.push(`${event.nearest_line_distance} ft`);
+    if (
+        typeof event.nearest_line_distance ===
+        "number"
+    ) {
+
+        details.push(
+            `${event.nearest_line_distance} ft`
+        );
     }
 
-    lineCallDetailElement.textContent = details.join(" \u00b7 ");
+    lineCallDetailElement.textContent =
+        details.join(" · ");
 
-    lineCallElement.classList.add("show");
+    lineCallElement.classList.add(
+        "show"
+    );
 
-    // Naya event aaye to timer dobara shuru
-    clearTimeout(lineCallHideTimer);
-    lineCallHideTimer = setTimeout(hideLineCall, LINECALL_SHOW_MS);
+    clearTimeout(
+        lineCallHideTimer
+    );
+
+    lineCallHideTimer =
+        setTimeout(
+            hideLineCall,
+            LINECALL_SHOW_MS
+        );
 }
 
-// ---------- CONTINUOUS API POLLING ----------
+// ============================================================
+// POLL API ONCE
+// ============================================================
 
 async function pollLineCallOnce() {
 
-    const controller = new AbortController();
-    const timeout = setTimeout(
-        () => controller.abort(),
-        LINECALL_REQUEST_TIMEOUT_MS
-    );
+    // Do not make API request if user is not connected.
+    if (!lineCallLoopRunning) {
+        return;
+    }
+
+    const controller =
+        new AbortController();
+
+    activeLineCallController =
+        controller;
+
+    const timeout =
+        setTimeout(
+            () => controller.abort(),
+            LINECALL_REQUEST_TIMEOUT_MS
+        );
 
     try {
 
@@ -967,78 +1350,284 @@ async function pollLineCallOnce() {
             `${LINECALL_API_BASE}/tracknet/realtime/notifications/` +
             `${encodeURIComponent(sessionId)}/latest`;
 
-        const response = await fetch(url, {
-            cache: "no-store",
-            signal: controller.signal
-        });
+        console.log(
+            "[LineCall] API HIT:",
+            url
+        );
 
-        if (response.status === 404) {
-            // Abhi koi event nahi hai
+        const response =
+            await fetch(
+                url,
+                {
+                    cache: "no-store",
+                    signal: controller.signal
+                }
+            );
+
+        // If connection was lost while
+        // request was running, don't process it.
+        if (!lineCallLoopRunning) {
+            return;
+        }
+
+        if (
+            response.status === 404
+        ) {
+
+            // No event available.
             lineCallFirstPoll = false;
+
             return;
         }
 
         if (!response.ok) {
-            throw new Error(`API returned ${response.status}`);
+
+            throw new Error(
+                `API returned ${response.status}`
+            );
         }
 
-        const data = await response.json();
+        const data =
+            await response.json();
+
+        // Connection may have disappeared
+        // while JSON was being processed.
+        if (!lineCallLoopRunning) {
+            return;
+        }
 
         const event =
             data && data.event_id
                 ? data
-                : (data && (data.event || data.data)) || null;
+                : (
+                    data &&
+                    (
+                        data.event ||
+                        data.data
+                    )
+                ) || null;
 
-        if (!event || !event.event_id) {
+        if (
+            !event ||
+            !event.event_id
+        ) {
+
             lineCallFirstPoll = false;
+
             return;
         }
 
-        // Page khulte hi purana latest event dobara na dikhe
+        // ----------------------------------------------------
+        // First API hit after connection:
+        // Don't show old/latest event.
+        // Just remember its ID.
+        // ----------------------------------------------------
+
         if (lineCallFirstPoll) {
+
             lineCallFirstPoll = false;
-            lastLineCallEventId = event.event_id;
+
+            lastLineCallEventId =
+                event.event_id;
+
+            console.log(
+                "[LineCall] Initial event remembered:",
+                event.event_id
+            );
+
             return;
         }
 
-        if (event.event_id !== lastLineCallEventId) {
-            lastLineCallEventId = event.event_id;
+        // ----------------------------------------------------
+        // Only NEW event is displayed.
+        // ----------------------------------------------------
 
-            console.log("[LineCall] New event:", event);
+        if (
+            event.event_id !==
+            lastLineCallEventId
+        ) {
 
-            showLineCall(event);
+            lastLineCallEventId =
+                event.event_id;
+
+            console.log(
+                "[LineCall] 🟢 NEW EVENT:",
+                event
+            );
+
+            showLineCall(
+                event
+            );
         }
 
     } finally {
 
-        clearTimeout(timeout);
+        clearTimeout(
+            timeout
+        );
+
+        if (
+            activeLineCallController ===
+            controller
+        ) {
+
+            activeLineCallController =
+                null;
+        }
     }
 }
 
-let lineCallLoopRunning = true;
+// ============================================================
+// START LINE CALL POLLING
+//
+// Called ONLY when WebRTC becomes connected.
+// ============================================================
+
+function startLineCallPolling() {
+
+    // Already running -> do nothing.
+    // This prevents multiple loops.
+    if (lineCallLoopRunning) {
+
+        console.log(
+            "[LineCall] Polling already running."
+        );
+
+        return;
+    }
+
+    console.log(
+        "[LineCall] 🟢 User connected -> START API polling"
+    );
+
+    console.log(
+        "[LineCall] Session ID:",
+        sessionId
+    );
+
+    lineCallLoopRunning = true;
+
+    // On every new connection, the current
+    // latest event is treated as old.
+    // A genuinely newer event will be shown.
+    lineCallFirstPoll = true;
+
+    lineCallLoop();
+}
+
+// ============================================================
+// STOP LINE CALL POLLING
+//
+// Called when WebRTC disconnects/fails/closes.
+// ============================================================
+
+function stopLineCallPolling() {
+
+    if (!lineCallLoopRunning) {
+
+        // Even if loop is already stopped,
+        // make sure any active request is cancelled.
+        if (activeLineCallController) {
+
+            activeLineCallController.abort();
+
+            activeLineCallController = null;
+        }
+
+        return;
+    }
+
+    console.log(
+        "[LineCall] 🔴 User disconnected -> STOP API polling"
+    );
+
+    lineCallLoopRunning = false;
+
+    // Cancel current API request immediately.
+    if (activeLineCallController) {
+
+        console.log(
+            "[LineCall] Aborting active API request..."
+        );
+
+        activeLineCallController.abort();
+
+        activeLineCallController = null;
+    }
+
+    // Hide any currently visible Line Call badge.
+    clearTimeout(
+        lineCallHideTimer
+    );
+
+    hideLineCall();
+}
+
+// ============================================================
+// CONTINUOUS API POLLING LOOP
+// ============================================================
 
 async function lineCallLoop() {
 
-    while (lineCallLoopRunning) {
+    while (
+        lineCallLoopRunning
+    ) {
 
         try {
 
             await pollLineCallOnce();
 
-            if (LINECALL_MIN_GAP_MS > 0) {
-                await sleep(LINECALL_MIN_GAP_MS);
+            // Connection could have been lost
+            // while the request was running.
+            if (!lineCallLoopRunning) {
+                break;
+            }
+
+            if (
+                LINECALL_MIN_GAP_MS > 0
+            ) {
+
+                await sleep(
+                    LINECALL_MIN_GAP_MS
+                );
             }
 
         } catch (error) {
 
-            console.warn("[LineCall] Poll failed:", error);
+            // AbortController is expected on disconnect.
+            if (
+                error &&
+                error.name === "AbortError"
+            ) {
 
-            await sleep(LINECALL_ERROR_RETRY_MS);
+                console.log(
+                    "[LineCall] Request aborted."
+                );
+
+                break;
+            }
+
+            console.warn(
+                "[LineCall] Poll failed:",
+                error
+            );
+
+            // IMPORTANT:
+            // Don't retry after disconnect.
+            if (!lineCallLoopRunning) {
+                break;
+            }
+
+            await sleep(
+                LINECALL_ERROR_RETRY_MS
+            );
         }
     }
-}
 
-lineCallLoop();
+    console.log(
+        "[LineCall] Polling loop stopped."
+    );
+}
 
 // ============================================================
 // CLEANUP
@@ -1048,12 +1637,28 @@ window.addEventListener(
     "beforeunload",
     () => {
 
+        console.log(
+            "[WebViewer] Cleaning up..."
+        );
+
+        // Stop API polling.
         lineCallLoopRunning = false;
+
+        if (
+            activeLineCallController
+        ) {
+
+            activeLineCallController.abort();
+
+            activeLineCallController = null;
+        }
 
         stopPeerConnection();
 
         if (socket) {
+
             socket.close();
         }
     }
 );
+```
