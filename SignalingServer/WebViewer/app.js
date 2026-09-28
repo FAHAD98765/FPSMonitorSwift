@@ -889,6 +889,130 @@ requestAnimationFrame(
 );
 
 // ============================================================
+// LINE CALL (polls the tracknet API, shows IN / OUT for 1 second)
+// ============================================================
+
+// NOTE: page HTTPS pe ho to browser http:// API ko block kar deta hai
+// (mixed content). Us surat mein yahan apne server ka proxy path do.
+const LINECALL_API_BASE = "http://13.60.246.31:8000";
+const LINECALL_POLL_MS = 500;   // API kitni dair baad hit ho
+const LINECALL_SHOW_MS = 1000;  // line call kitni dair screen par rahe
+
+const lineCallElement = document.getElementById("lineCall");
+const lineCallResultElement = document.getElementById("lineCallResult");
+const lineCallDetailElement = document.getElementById("lineCallDetail");
+
+let lastLineCallEventId = null;
+let lineCallFirstPoll = true;
+let lineCallHideTimer = null;
+let lineCallRequestInFlight = false;
+
+function showLineCall(event) {
+
+    const result = String(event.in_out || "").toLowerCase();
+
+    lineCallElement.dataset.result =
+        result === "in" || result === "out" ? result : "";
+
+    lineCallResultElement.textContent =
+        result ? result.toUpperCase() : String(event.type || "EVENT").toUpperCase();
+
+    const details = [];
+
+    if (event.nearest_line) {
+        details.push(event.nearest_line);
+    }
+
+    if (typeof event.nearest_line_distance === "number") {
+        details.push(`${event.nearest_line_distance} ft`);
+    }
+
+    lineCallDetailElement.textContent = details.join(" \u00b7 ");
+
+    lineCallElement.classList.add("show");
+
+    // New event aaye to timer dobara 1 second se shuru
+    clearTimeout(lineCallHideTimer);
+
+    lineCallHideTimer = setTimeout(() => {
+        lineCallElement.classList.remove("show");
+    }, LINECALL_SHOW_MS);
+}
+
+async function pollLineCall() {
+
+    if (!sessionId || lineCallRequestInFlight) {
+        return;
+    }
+
+    lineCallRequestInFlight = true;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+
+    try {
+
+        const url =
+            `${LINECALL_API_BASE}/tracknet/realtime/notifications/` +
+            `${encodeURIComponent(sessionId)}/latest`;
+
+        const response = await fetch(url, {
+            cache: "no-store",
+            signal: controller.signal
+        });
+
+        if (response.status === 404) {
+            // Abhi koi event nahi hai
+            lineCallFirstPoll = false;
+            return;
+        }
+
+        if (!response.ok) {
+            return;
+        }
+
+        const data = await response.json();
+
+        const event =
+            data && data.event_id
+                ? data
+                : (data && (data.event || data.data)) || null;
+
+        if (!event || !event.event_id) {
+            lineCallFirstPoll = false;
+            return;
+        }
+
+        // Page khulte hi purana latest event dobara na dikhe
+        if (lineCallFirstPoll) {
+            lineCallFirstPoll = false;
+            lastLineCallEventId = event.event_id;
+            return;
+        }
+
+        if (event.event_id !== lastLineCallEventId) {
+            lastLineCallEventId = event.event_id;
+
+            console.log("[LineCall] New event:", event);
+
+            showLineCall(event);
+        }
+
+    } catch (error) {
+
+        console.warn("[LineCall] Poll failed:", error);
+
+    } finally {
+
+        clearTimeout(timeout);
+        lineCallRequestInFlight = false;
+    }
+}
+
+setInterval(pollLineCall, LINECALL_POLL_MS);
+pollLineCall();
+
+// ============================================================
 // CLEANUP
 // ============================================================
 

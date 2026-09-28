@@ -204,6 +204,87 @@
         }
 
         /* =========================
+           LINE CALL OVERLAY
+        ========================= */
+
+        .line-call {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%) scale(0.9);
+            z-index: 5;
+
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+
+            padding: 18px 34px;
+            border-radius: 18px;
+
+            background: rgba(0, 0, 0, 0.72);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 2px solid var(--call-color, #ffffff);
+            box-shadow: 0 0 40px var(--call-glow, rgba(255, 255, 255, 0.3));
+
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.12s ease, transform 0.12s ease;
+            text-align: center;
+        }
+
+        .line-call.show {
+            opacity: 1;
+            transform: translate(-50%, -50%) scale(1);
+        }
+
+        .line-call[data-result="in"] {
+            --call-color: #22c55e;
+            --call-glow: rgba(34, 197, 94, 0.55);
+        }
+
+        .line-call[data-result="out"] {
+            --call-color: #ef4444;
+            --call-glow: rgba(239, 68, 68, 0.55);
+        }
+
+        .line-call-title {
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            color: #aeb5bf;
+        }
+
+        .line-call-result {
+            font-size: 52px;
+            font-weight: 800;
+            line-height: 1;
+            letter-spacing: 2px;
+            color: var(--call-color, #ffffff);
+        }
+
+        .line-call-detail {
+            font-size: 13px;
+            color: #d5dae1;
+        }
+
+        @media (max-width: 480px) {
+            .line-call {
+                padding: 12px 22px;
+                border-radius: 14px;
+            }
+
+            .line-call-result {
+                font-size: 36px;
+            }
+
+            .line-call-detail {
+                font-size: 11px;
+            }
+        }
+
+        /* =========================
            INFO
         ========================= */
 
@@ -429,6 +510,13 @@
                     FPS: --
                 </div>
 
+            </div>
+
+            <!-- LINE CALL -->
+            <div class="line-call" id="lineCall">
+                <div class="line-call-title">LINE CALL</div>
+                <div class="line-call-result" id="lineCallResult">--</div>
+                <div class="line-call-detail" id="lineCallDetail"></div>
             </div>
 
         </section>
