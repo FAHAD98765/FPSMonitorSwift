@@ -888,29 +888,38 @@ requestAnimationFrame(
 );
 
 // ============================================================
-// LINE CALL (polls the tracknet API, shows IN / OUT / UNCERTAIN
-// as a small badge top-right, in place of FPS, for 1 second)
+// LINE CALL
+//
+// - API continuously hit hoti rehti hai (ek response aate hi
+//   agli request foran, koi fixed 500ms wait nahi).
+// - Naya event API se aate hi FORAN display hota hai (koi frame/timer
+//   wait nahi), FPS badge ke neeche, LINECALL_SHOW_MS ke baad hat jata hai.
 // ============================================================
 
 // NOTE: page HTTPS pe ho to browser http:// API ko block kar deta hai
 // (mixed content). Us surat mein yahan apne server ka proxy path do.
 const LINECALL_API_BASE = "http://13.60.246.31:8000";
-const LINECALL_POLL_MS = 500;   // API kitni dair baad hit ho
-const LINECALL_SHOW_MS = 1000;  // line call kitni dair screen par rahe
+const LINECALL_SHOW_MS = 1000;            // badge kitni dair rahe
+const LINECALL_MIN_GAP_MS = 0;            // 2 requests ke beech minimum gap (0 = back-to-back)
+const LINECALL_ERROR_RETRY_MS = 300;      // network error par dobara try
+const LINECALL_REQUEST_TIMEOUT_MS = 2000; // atki hui request jaldi cancel
 
 const lineCallElement = document.getElementById("lineCall");
 const lineCallResultElement = document.getElementById("lineCallResult");
 const lineCallDetailElement = document.getElementById("lineCallDetail");
-const videoCardElement = lineCallElement.closest(".video-card");
 
 let lastLineCallEventId = null;
 let lineCallFirstPoll = true;
 let lineCallHideTimer = null;
-let lineCallRequestInFlight = false;
+
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ---------- DISPLAY ----------
 
 function hideLineCall() {
     lineCallElement.classList.remove("show");
-    videoCardElement.classList.remove("call-active");
 }
 
 function showLineCall(event) {
@@ -936,23 +945,21 @@ function showLineCall(event) {
     lineCallDetailElement.textContent = details.join(" \u00b7 ");
 
     lineCallElement.classList.add("show");
-    videoCardElement.classList.add("call-active");   // FPS badge chhupao
 
-    // Naya event aaye to timer dobara 1 second se shuru
+    // Naya event aaye to timer dobara shuru
     clearTimeout(lineCallHideTimer);
     lineCallHideTimer = setTimeout(hideLineCall, LINECALL_SHOW_MS);
 }
 
-async function pollLineCall() {
+// ---------- CONTINUOUS API POLLING ----------
 
-    if (!sessionId || lineCallRequestInFlight) {
-        return;
-    }
-
-    lineCallRequestInFlight = true;
+async function pollLineCallOnce() {
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4000);
+    const timeout = setTimeout(
+        () => controller.abort(),
+        LINECALL_REQUEST_TIMEOUT_MS
+    );
 
     try {
 
@@ -972,7 +979,7 @@ async function pollLineCall() {
         }
 
         if (!response.ok) {
-            return;
+            throw new Error(`API returned ${response.status}`);
         }
 
         const data = await response.json();
@@ -1002,19 +1009,36 @@ async function pollLineCall() {
             showLineCall(event);
         }
 
-    } catch (error) {
-
-        console.warn("[LineCall] Poll failed:", error);
-
     } finally {
 
         clearTimeout(timeout);
-        lineCallRequestInFlight = false;
     }
 }
 
-setInterval(pollLineCall, LINECALL_POLL_MS);
-pollLineCall();
+let lineCallLoopRunning = true;
+
+async function lineCallLoop() {
+
+    while (lineCallLoopRunning) {
+
+        try {
+
+            await pollLineCallOnce();
+
+            if (LINECALL_MIN_GAP_MS > 0) {
+                await sleep(LINECALL_MIN_GAP_MS);
+            }
+
+        } catch (error) {
+
+            console.warn("[LineCall] Poll failed:", error);
+
+            await sleep(LINECALL_ERROR_RETRY_MS);
+        }
+    }
+}
+
+lineCallLoop();
 
 // ============================================================
 // CLEANUP
@@ -1023,6 +1047,8 @@ pollLineCall();
 window.addEventListener(
     "beforeunload",
     () => {
+
+        lineCallLoopRunning = false;
 
         stopPeerConnection();
 

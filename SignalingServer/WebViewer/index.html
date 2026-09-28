@@ -200,50 +200,43 @@
 
         .fps-badge {
             color: var(--state-color);
-            transition: color 0.25s ease, opacity 0.12s ease;
+            transition: color 0.25s ease;
         }
 
         /* =========================
-           LINE CALL OVERLAY
-           (small badge, top-right, replaces FPS while visible)
+           LINE CALL (small, bold, FPS ke neeche)
         ========================= */
 
-        /* line call aaye to FPS chhup jaye */
-        .video-card.call-active .fps-badge {
-            opacity: 0;
+        .overlay-right {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 6px;
         }
 
         .line-call {
-            position: absolute;
-            top: 16px;
-            right: 16px;
-            z-index: 5;
-
             display: flex;
             flex-direction: row;
             align-items: center;
             gap: 8px;
 
-            padding: 8px 12px;
-            border-radius: 10px;
+            padding: 6px 10px;
+            border-radius: 8px;
 
-            background: rgba(0, 0, 0, 0.75);
+            background: rgba(0, 0, 0, 0.78);
             backdrop-filter: blur(10px);
             -webkit-backdrop-filter: blur(10px);
             border: 1px solid var(--call-color, #ffffff);
-            box-shadow: 0 0 16px var(--call-glow, rgba(255, 255, 255, 0.3));
+            box-shadow: 0 0 14px var(--call-glow, rgba(255, 255, 255, 0.3));
 
             opacity: 0;
-            transform: scale(0.9);
-            transform-origin: top right;
             pointer-events: none;
-            transition: opacity 0.12s ease, transform 0.12s ease;
             white-space: nowrap;
+            transition: opacity 0.08s ease;
         }
 
         .line-call.show {
             opacity: 1;
-            transform: scale(1);
         }
 
         .line-call[data-result="in"] {
@@ -266,7 +259,7 @@
         }
 
         .line-call-result {
-            font-size: 16px;
+            font-size: 14px;
             font-weight: 800;
             line-height: 1;
             letter-spacing: 1px;
@@ -275,7 +268,8 @@
 
         .line-call-detail {
             font-size: 11px;
-            color: #d5dae1;
+            font-weight: 700;
+            color: #e5e9ef;
         }
 
         .line-call-detail:empty {
@@ -383,12 +377,6 @@
                 padding: 7px 9px;
             }
 
-            .line-call {
-                top: 10px;
-                right: 10px;
-                padding: 7px 9px;
-            }
-
             .info {
                 padding: 12px;
                 border-radius: 12px;
@@ -451,10 +439,7 @@
             }
 
             .line-call {
-                top: 8px;
-                right: 8px;
-                padding: 6px 8px;
-                border-radius: 8px;
+                padding: 5px 8px;
                 gap: 6px;
             }
 
@@ -523,20 +508,24 @@
                     Connecting...
                 </div>
 
-                <div
-                    class="fps-badge"
-                    id="fps"
-                >
-                    FPS: --
+                <div class="overlay-right">
+
+                    <div
+                        class="fps-badge"
+                        id="fps"
+                    >
+                        FPS: --
+                    </div>
+
+                    <!-- LINE CALL (FPS ke neeche) -->
+                    <div class="line-call" id="lineCall">
+                        <div class="line-call-title">LINE CALL</div>
+                        <div class="line-call-result" id="lineCallResult">--</div>
+                        <div class="line-call-detail" id="lineCallDetail"></div>
+                    </div>
+
                 </div>
 
-            </div>
-
-            <!-- LINE CALL (small badge, top-right) -->
-            <div class="line-call" id="lineCall">
-                <div class="line-call-title">LINE CALL</div>
-                <div class="line-call-result" id="lineCallResult">--</div>
-                <div class="line-call-detail" id="lineCallDetail"></div>
             </div>
 
         </section>
