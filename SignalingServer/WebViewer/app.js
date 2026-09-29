@@ -1204,8 +1204,14 @@ const LINECALL_MIN_GAP_MS =
 const LINECALL_ERROR_RETRY_MS =
     300;
 
+// Bumped up from 2000ms: the tracking pipeline can take a bit to
+// finish processing a frame before the "latest" event is ready, and
+// a request that legitimately takes >2s was being treated as a fatal
+// timeout (see the AbortError fix below), which made the whole
+// polling loop die. Increasing this reduces how often we even hit
+// that edge case in the first place.
 const LINECALL_REQUEST_TIMEOUT_MS =
-    2000;
+    5000;
 
 const lineCallElement =
     document.getElementById("lineCall");
@@ -1593,17 +1599,50 @@ async function lineCallLoop() {
 
         } catch (error) {
 
-            // AbortController is expected on disconnect.
+            // AbortError fires in TWO different situations, and they
+            // must NOT be treated the same:
+            //
+            //   1) Disconnect -> stopLineCallPolling() calls
+            //      activeLineCallController.abort() AND sets
+            //      lineCallLoopRunning = false.
+            //      -> real stop, loop should break.
+            //
+            //   2) Per-request timeout (LINECALL_REQUEST_TIMEOUT_MS)
+            //      -> a single slow API response, lineCallLoopRunning
+            //      is still TRUE.
+            //      -> NOT a disconnect. Must keep polling, otherwise
+            //      the loop dies silently and never restarts (because
+            //      startLineCallPolling() sees lineCallLoopRunning
+            //      still true and refuses to start a new loop).
+            //
+            // BUG THAT WAS HERE: every AbortError broke the loop, so
+            // a single slow/timed-out request permanently killed live
+            // polling until the viewer fully disconnected and
+            // reconnected — which is exactly the "line call only
+            // shows up after disconnect" symptom.
             if (
                 error &&
                 error.name === "AbortError"
             ) {
 
-                console.log(
-                    "[LineCall] Request aborted."
+                if (!lineCallLoopRunning) {
+
+                    console.log(
+                        "[LineCall] Request aborted (disconnect)."
+                    );
+
+                    break;
+                }
+
+                console.warn(
+                    "[LineCall] Request timed out, retrying..."
                 );
 
-                break;
+                await sleep(
+                    LINECALL_ERROR_RETRY_MS
+                );
+
+                continue;
             }
 
             console.warn(
@@ -1660,4 +1699,3 @@ window.addEventListener(
         }
     }
 );
-
