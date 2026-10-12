@@ -144,6 +144,8 @@
 
         /* =========================
            VIDEO OVERLAY
+           (covers the whole video so the line call
+            can be centered inside it)
         ========================= */
 
         .video-overlay {
@@ -151,6 +153,7 @@
             top: 0;
             left: 0;
             right: 0;
+            bottom: 0;
 
             display: flex;
             justify-content: space-between;
@@ -204,7 +207,8 @@
         }
 
         /* =========================
-           LINE CALL (small, bold, FPS ke neeche)
+           LINE CALL
+           (big, red, centered on the video)
         ========================= */
 
         .overlay-right {
@@ -215,19 +219,29 @@
         }
 
         .line-call {
+            --call-color: #ef4444;
+            --call-glow: rgba(239, 68, 68, 0.6);
+
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 5;
+            max-width: calc(100% - 32px);
+
             display: flex;
-            flex-direction: row;
+            flex-direction: column;
             align-items: center;
-            gap: 8px;
+            gap: 6px;
 
-            padding: 6px 10px;
-            border-radius: 8px;
+            padding: 14px 28px;
+            border-radius: 16px;
 
-            background: rgba(0, 0, 0, 0.78);
+            background: rgba(0, 0, 0, 0.72);
             backdrop-filter: blur(10px);
             -webkit-backdrop-filter: blur(10px);
-            border: 1px solid var(--call-color, #ffffff);
-            box-shadow: 0 0 14px var(--call-glow, rgba(255, 255, 255, 0.3));
+            border: 2px solid var(--call-color);
+            box-shadow: 0 0 30px var(--call-glow);
 
             opacity: 0;
             pointer-events: none;
@@ -239,37 +253,23 @@
             opacity: 1;
         }
 
-        .line-call[data-result="in"] {
-            --call-color: #22c55e;
-            --call-glow: rgba(34, 197, 94, 0.55);
-        }
-
-        .line-call[data-result="out"] {
-            --call-color: #ef4444;
-            --call-glow: rgba(239, 68, 68, 0.55);
-        }
-
-        .line-call[data-result="uncertain"] {
-            --call-color: #f59e0b;
-            --call-glow: rgba(245, 158, 11, 0.55);
-        }
-
         .line-call-title {
             display: none;
         }
 
         .line-call-result {
-            font-size: 14px;
-            font-weight: 800;
+            font-size: 56px;
+            font-weight: 900;
             line-height: 1;
-            letter-spacing: 1px;
-            color: var(--call-color, #ffffff);
+            letter-spacing: 3px;
+            color: var(--call-color);
+            text-shadow: 0 0 18px var(--call-glow);
         }
 
         .line-call-detail {
-            font-size: 11px;
+            font-size: 16px;
             font-weight: 700;
-            color: #e5e9ef;
+            color: #ffffff;
         }
 
         .line-call-detail:empty {
@@ -321,9 +321,178 @@
             text-decoration: underline;
         }
 
+        .line-call-clip-actions {
+            display: flex;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .line-call-clip-download {
+            flex: 1;
+            display: none;
+
+            padding: 6px 4px;
+
+            font-size: 10px;
+            font-weight: 700;
+            color: #9ad6ff;
+            text-align: center;
+            text-decoration: none;
+
+            background: none;
+            border: none;
+            cursor: pointer;
+        }
+
+        .line-call-clip-download:hover {
+            text-decoration: underline;
+        }
+
+        .line-call-clip-download.disabled {
+            color: #6f7782;
+            cursor: default;
+            pointer-events: none;
+        }
+
         @media (max-width: 480px) {
             .line-call-clip {
                 width: 120px;
+            }
+        }
+
+        /* =========================
+           COURT DIAGRAM (ball landing spot)
+        ========================= */
+
+        @keyframes dropIn {
+            0% {
+                transform: translateY(-40px) scale(0.6);
+                opacity: 0;
+            }
+            60% {
+                transform: translateY(4px) scale(1.15);
+                opacity: 1;
+            }
+            80% {
+                transform: translateY(-2px) scale(0.95);
+            }
+            100% {
+                transform: translateY(0) scale(1);
+            }
+        }
+
+        .court-panel {
+            /* always red: dot + result text */
+            --call-color: #ef4444;
+
+            margin-top: 14px;
+
+            display: flex;
+            align-items: center;
+            gap: 16px;
+
+            padding: 14px 16px;
+
+            background: #12151a;
+            border: 1px solid #20242b;
+            border-radius: 14px;
+
+            opacity: 0;
+            max-height: 0;
+            overflow: hidden;
+            transition: opacity 0.15s ease;
+        }
+
+        .court-panel.show {
+            opacity: 1;
+            max-height: 300px;
+        }
+
+        .court-diagram-wrap {
+            flex-shrink: 0;
+            width: 110px;
+        }
+
+        .court-diagram-wrap svg {
+            display: block;
+            width: 100%;
+            height: auto;
+        }
+
+        .court-outline {
+            fill: #0b0d10;
+            stroke: #4b5563;
+            stroke-width: 2;
+        }
+
+        .court-net {
+            stroke: #6b7280;
+            stroke-width: 3;
+            stroke-dasharray: 6 5;
+        }
+
+        .court-nvz-line,
+        .court-center-line {
+            stroke: #374151;
+            stroke-width: 1.5;
+        }
+
+        #courtMarker {
+            fill: var(--call-color, #ef4444);
+            stroke: #ffffff;
+            stroke-width: 2;
+            transform-origin: center;
+            transform-box: fill-box;
+        }
+
+        #courtMarker.drop {
+            animation: dropIn 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+
+        .court-info {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            min-width: 0;
+        }
+
+        .court-info-result {
+            font-size: 16px;
+            font-weight: 800;
+            letter-spacing: 1px;
+            color: var(--call-color, #ffffff);
+        }
+
+        .court-info-detail {
+            font-size: 12px;
+            color: #aeb5bf;
+        }
+
+        .court-info-coords {
+            font-size: 11px;
+            color: #6f7782;
+        }
+
+        @media (max-width: 480px) {
+
+            .court-panel {
+                padding: 10px 12px;
+                gap: 10px;
+            }
+
+            .court-diagram-wrap {
+                width: 76px;
+            }
+
+            .court-info-result {
+                font-size: 14px;
+            }
+
+            .court-info-detail {
+                font-size: 11px;
+            }
+
+            .court-info-coords {
+                font-size: 10px;
             }
         }
 
@@ -428,6 +597,10 @@
                 padding: 7px 9px;
             }
 
+            .line-call-result {
+                font-size: 44px;
+            }
+
             .info {
                 padding: 12px;
                 border-radius: 12px;
@@ -490,16 +663,21 @@
             }
 
             .line-call {
-                padding: 5px 8px;
-                gap: 6px;
+                max-width: calc(100% - 24px);
+                padding: 10px 14px;
+                gap: 4px;
+                white-space: normal;
             }
 
             .line-call-result {
-                font-size: 13px;
+                font-size: clamp(22px, 8vw, 34px);
+                letter-spacing: 1px;
+                text-align: center;
             }
 
             .line-call-detail {
-                font-size: 10px;
+                font-size: 12px;
+                text-align: center;
             }
 
             .info {
@@ -568,14 +746,14 @@
                         FPS: --
                     </div>
 
-                    <!-- LINE CALL (FPS ke neeche) -->
+                    <!-- LINE CALL (centered on the video, big, red) -->
                     <div class="line-call" id="lineCall">
                         <div class="line-call-title">LINE CALL</div>
                         <div class="line-call-result" id="lineCallResult">--</div>
                         <div class="line-call-detail" id="lineCallDetail"></div>
                     </div>
 
-                    <!-- CLIP REPLAY (shows under the line-call badge when
+                    <!-- CLIP REPLAY (shows under the FPS badge when
                          the event carries a "url" pointing to the clip) -->
                     <div class="line-call-clip" id="lineCallClip">
                         <video
@@ -592,10 +770,77 @@
                             rel="noopener"
                             style="display: none;"
                         >Open clip</a>
+
+                        <div class="line-call-clip-actions">
+                            <button
+                                type="button"
+                                class="line-call-clip-download"
+                                id="lineCallClipDownload"
+                            >⬇ Download</button>
+                        </div>
                     </div>
 
                 </div>
 
+            </div>
+
+        </section>
+
+
+        <!-- BALL LANDING SPOT (court diagram) -->
+        <section class="court-panel" id="courtPanel">
+
+            <div class="court-diagram-wrap">
+                <svg viewBox="-30 -30 260 500" xmlns="http://www.w3.org/2000/svg">
+
+                    <!-- Court outline: 20ft wide x 44ft long, 10 units per ft -->
+                    <rect
+                        class="court-outline"
+                        x="1" y="1" width="198" height="438"
+                    ></rect>
+
+                    <!-- Net (middle of the court) -->
+                    <line
+                        class="court-net"
+                        x1="0" y1="220" x2="200" y2="220"
+                    ></line>
+
+                    <!-- NVZ / kitchen lines, 7ft from net each side -->
+                    <line
+                        class="court-nvz-line"
+                        x1="0" y1="150" x2="200" y2="150"
+                    ></line>
+                    <line
+                        class="court-nvz-line"
+                        x1="0" y1="290" x2="200" y2="290"
+                    ></line>
+
+                    <!-- Center service lines (net to kitchen, both halves) -->
+                    <line
+                        class="court-center-line"
+                        x1="100" y1="0" x2="100" y2="150"
+                    ></line>
+                    <line
+                        class="court-center-line"
+                        x1="100" y1="290" x2="100" y2="440"
+                    ></line>
+
+                    <!-- Ball landing marker -->
+                    <circle
+                        id="courtMarker"
+                        cx="100"
+                        cy="220"
+                        r="7"
+                        style="display: none;"
+                    ></circle>
+
+                </svg>
+            </div>
+
+            <div class="court-info">
+                <div class="court-info-result" id="courtInfoResult">--</div>
+                <div class="court-info-detail" id="courtInfoDetail"></div>
+                <div class="court-info-coords" id="courtInfoCoords"></div>
             </div>
 
         </section>

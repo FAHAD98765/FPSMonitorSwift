@@ -23,6 +23,10 @@ let socket = null;
 let peerConnection = null;
 let producerId = null;
 
+// Set to true when the page is closing so the WebSocket
+// auto-reconnect doesn't kick in.
+let pageUnloading = false;
+
 // ============================================================
 // ICE CANDIDATE QUEUE
 // ============================================================
@@ -50,6 +54,10 @@ let rtcConfig = {
 
 // ============================================================
 // TURN - METERED
+//
+// NOTE: this API key is visible to anyone who opens the page.
+// In the Metered dashboard, restrict it to your domain(s) or
+// rotate it.
 // ============================================================
 
 async function fetchTurnCredentials() {
@@ -216,6 +224,37 @@ function updateConnectionUI(state) {
 }
 
 // ============================================================
+// TAP VIDEO TO START PLAYBACK
+// (used when the browser blocked autoplay)
+// ============================================================
+
+videoElement.addEventListener(
+    "click",
+    () => {
+
+        if (!videoElement.srcObject) {
+            return;
+        }
+
+        videoElement
+            .play()
+            .then(() => {
+
+                if (uiConnectionState === "connected") {
+                    setStatus("LIVE");
+                }
+            })
+            .catch((error) => {
+
+                console.warn(
+                    "[Video] Manual play failed:",
+                    error
+                );
+            });
+    }
+);
+
+// ============================================================
 // START
 // ============================================================
 
@@ -260,7 +299,84 @@ start();
 
 // ============================================================
 // WEBSOCKET SIGNALING
+//
+// Auto-reconnects with backoff (1s, 2s, 4s ... max 10s) and sends
+// a ping every 25s so idle proxies don't drop the connection.
 // ============================================================
+
+const WS_PING_INTERVAL_MS = 25000;
+const WS_RECONNECT_BASE_MS = 1000;
+const WS_RECONNECT_MAX_MS = 10000;
+
+let wsReconnectAttempts = 0;
+let wsReconnectTimer = null;
+let wsPingTimer = null;
+
+function stopWsPing() {
+
+    if (wsPingTimer) {
+
+        clearInterval(wsPingTimer);
+
+        wsPingTimer = null;
+    }
+}
+
+function startWsPing(ws) {
+
+    stopWsPing();
+
+    wsPingTimer = setInterval(
+        () => {
+
+            if (
+                ws.readyState === WebSocket.OPEN
+            ) {
+
+                ws.send(
+                    JSON.stringify({
+                        type: "ping"
+                    })
+                );
+            }
+        },
+        WS_PING_INTERVAL_MS
+    );
+}
+
+function scheduleSignalingReconnect() {
+
+    if (
+        pageUnloading ||
+        wsReconnectTimer
+    ) {
+        return;
+    }
+
+    const delay =
+        Math.min(
+            WS_RECONNECT_BASE_MS *
+                Math.pow(2, wsReconnectAttempts),
+            WS_RECONNECT_MAX_MS
+        );
+
+    wsReconnectAttempts++;
+
+    console.log(
+        `[WS] Reconnecting in ${delay}ms (attempt ${wsReconnectAttempts})`
+    );
+
+    wsReconnectTimer =
+        setTimeout(
+            () => {
+
+                wsReconnectTimer = null;
+
+                connectSignaling();
+            },
+            delay
+        );
+}
 
 function connectSignaling() {
 
@@ -277,15 +393,25 @@ function connectSignaling() {
         wsURL
     );
 
-    socket = new WebSocket(wsURL);
+    const ws = new WebSocket(wsURL);
 
-    socket.onopen = () => {
+    socket = ws;
+
+    ws.onopen = () => {
+
+        if (socket !== ws) {
+            return;
+        }
 
         console.log(
             "[WS] Connected"
         );
 
-        socket.send(
+        wsReconnectAttempts = 0;
+
+        startWsPing(ws);
+
+        ws.send(
             JSON.stringify({
                 type: "register",
                 sessionId: sessionId,
@@ -298,12 +424,23 @@ function connectSignaling() {
             sessionId
         );
 
-        setStatus(
-            "Connected to signaling server. Waiting for host..."
-        );
+        // Don't overwrite a live video status.
+        if (
+            !peerConnection ||
+            peerConnection.connectionState !== "connected"
+        ) {
+
+            setStatus(
+                "Connected to signaling server. Waiting for host..."
+            );
+        }
     };
 
-    socket.onmessage = async (event) => {
+    ws.onmessage = async (event) => {
+
+        if (socket !== ws) {
+            return;
+        }
 
         try {
 
@@ -415,7 +552,11 @@ function connectSignaling() {
         }
     };
 
-    socket.onerror = (error) => {
+    ws.onerror = (error) => {
+
+        if (socket !== ws) {
+            return;
+        }
 
         console.error(
             "[WS] Error:",
@@ -441,11 +582,17 @@ function connectSignaling() {
         );
     };
 
-    socket.onclose = () => {
+    ws.onclose = () => {
+
+        if (socket !== ws) {
+            return;
+        }
 
         console.log(
             "[WS] Disconnected"
         );
+
+        stopWsPing();
 
         if (
             !peerConnection ||
@@ -461,9 +608,14 @@ function connectSignaling() {
             stopLineCallPolling();
         }
 
-        setStatus(
-            "Signaling server disconnected"
-        );
+        if (!pageUnloading) {
+
+            setStatus(
+                "Signaling server disconnected. Reconnecting..."
+            );
+
+            scheduleSignalingReconnect();
+        }
     };
 }
 
@@ -887,8 +1039,10 @@ async function handleOffer(message) {
             "connecting"
         );
 
-        // Reset old ICE candidates.
-        pendingIceCandidates = [];
+        // NOTE: pendingIceCandidates is intentionally NOT cleared
+        // here. The host may send ICE candidates right after the
+        // offer, and clearing would drop ones that already arrived.
+        // It is cleared in stopPeerConnection() instead.
 
         await createPeerConnection();
 
@@ -1227,16 +1381,35 @@ requestAnimationFrame(
 // DISCONNECTED:
 //   API polling completely stop hoti hai.
 //   Current request bhi abort hoti hai.
+//   Jo line call / clip / court diagram screen par hai woh
+//   apne normal timer tak wahin rehta hai (hide nahi hota).
 //
 // RECONNECTED:
-//   API polling dobara start hoti hai.
+//   API polling dobara start hoti hai (naya loop ID, purana
+//   loop khud band ho jata hai).
 //
 // Session ID:
 //   URL se jo ONE sessionId mili hai, wahi use hoti hai.
 // ============================================================
 
+// IMPORTANT: if this viewer page is served over HTTPS, this MUST
+// be an https:// URL too (browsers block http:// requests from an
+// https:// page = "mixed content"), and the API must allow this
+// page's origin via CORS.
 const LINECALL_API_BASE =
     "http://13.60.246.31:8000";
+
+if (
+    window.location.protocol === "https:" &&
+    LINECALL_API_BASE.startsWith("http://")
+) {
+
+    console.error(
+        "[LineCall] ❌ Viewer is on HTTPS but LINECALL_API_BASE is HTTP. " +
+        "The browser will block line call requests (mixed content). " +
+        "Serve the API over HTTPS."
+    );
+}
 
 const LINECALL_SHOW_MS =
     1000;
@@ -1246,8 +1419,15 @@ const LINECALL_SHOW_MS =
 const LINECALL_SHOW_MS_WITH_CLIP =
     4000;
 
+// After the viewer's pointer leaves the clip (hover/touch), hide
+// the badge + clip after this many ms.
+const LINECALL_HIDE_AFTER_LEAVE_MS =
+    2000;
+
+// Small gap between polls so a fast/404 response doesn't turn the
+// loop into hundreds of requests per second.
 const LINECALL_MIN_GAP_MS =
-    0;
+    200;
 
 const LINECALL_ERROR_RETRY_MS =
     300;
@@ -1280,6 +1460,41 @@ const lineCallClipVideoElement =
 const lineCallClipFallbackElement =
     document.getElementById("lineCallClipFallback");
 
+const lineCallClipDownloadElement =
+    document.getElementById("lineCallClipDownload");
+
+// Court diagram elements (ball landing spot, drawn from
+// event.court_location, which is real-world feet — not the pixel
+// x/y, which is relative to the tracking model's frame size and
+// can't be reliably mapped onto the displayed video).
+const courtPanelElement =
+    document.getElementById("courtPanel");
+
+const courtMarkerElement =
+    document.getElementById("courtMarker");
+
+const courtInfoResultElement =
+    document.getElementById("courtInfoResult");
+
+const courtInfoDetailElement =
+    document.getElementById("courtInfoDetail");
+
+const courtInfoCoordsElement =
+    document.getElementById("courtInfoCoords");
+
+// Standard court dimensions this diagram assumes, in feet.
+// x: 0-20 (width), y: 0-44 (length), matching court_location's
+// "measured from the top-left baseline corner" description.
+const COURT_WIDTH_FT = 20;
+const COURT_LENGTH_FT = 44;
+
+// SVG court is 10 units per foot. The SVG viewBox is
+// "-30 -30 260 500", which leaves 3 ft of margin around the court,
+// so a ball that landed slightly OUT is drawn just outside the
+// lines instead of being squashed onto them.
+const COURT_SVG_SCALE = 10;
+const COURT_MARGIN_FT = 2.5;
+
 console.log(
     "[LineCall] DOM elements found:",
     {
@@ -1288,7 +1503,8 @@ console.log(
         lineCallDetailElement: !!lineCallDetailElement,
         lineCallClipElement: !!lineCallClipElement,
         lineCallClipVideoElement: !!lineCallClipVideoElement,
-        lineCallClipFallbackElement: !!lineCallClipFallbackElement
+        lineCallClipFallbackElement: !!lineCallClipFallbackElement,
+        lineCallClipDownloadElement: !!lineCallClipDownloadElement
     }
 );
 
@@ -1302,10 +1518,19 @@ let lineCallFirstPoll = true;
 
 let lineCallHideTimer = null;
 
+// URL of the clip currently shown (used by the Download button).
+let currentClipUrl = null;
+
 // IMPORTANT:
 // This is NOT a Session ID.
 // This only controls whether the API polling loop is running.
 let lineCallLoopRunning = false;
+
+// Every call to startLineCallPolling() gets a new loop ID. An older
+// loop that is still sleeping/awaiting notices its ID is stale and
+// exits, so a quick disconnect -> reconnect never leaves two loops
+// polling at the same time.
+let lineCallLoopId = 0;
 
 // Current API request controller.
 // Used to immediately cancel request on disconnect.
@@ -1313,6 +1538,14 @@ let activeLineCallController = null;
 
 // Counts every /latest API hit, purely for debugging in the console.
 let lineCallPollCount = 0;
+
+function isLoopActive(loopId) {
+
+    return (
+        lineCallLoopRunning &&
+        loopId === lineCallLoopId
+    );
+}
 
 // ============================================================
 // SLEEP
@@ -1329,13 +1562,58 @@ function sleep(ms) {
 }
 
 // ============================================================
+// SAFE CLIP URL
+//
+// Only https:// links are accepted for the clip, so a bad/odd API
+// value (e.g. "javascript:...") can never reach <video src> or
+// <a href>.
+// ============================================================
+
+function getSafeClipUrl(rawUrl) {
+
+    if (
+        typeof rawUrl !== "string" ||
+        !rawUrl
+    ) {
+        return null;
+    }
+
+    try {
+
+        const parsed =
+            new URL(rawUrl);
+
+        if (parsed.protocol !== "https:") {
+
+            console.warn(
+                "[LineCall] Ignoring non-https clip url:",
+                rawUrl
+            );
+
+            return null;
+        }
+
+        return parsed.href;
+
+    } catch (error) {
+
+        console.warn(
+            "[LineCall] Ignoring invalid clip url:",
+            rawUrl
+        );
+
+        return null;
+    }
+}
+
+// ============================================================
 // DISPLAY
 // ============================================================
 
 function hideLineCall() {
 
     console.log(
-        "[LineCall] Hiding badge (timer expired or disconnect)."
+        "[LineCall] Hiding badge (timer expired)."
     );
 
     lineCallElement.classList.remove(
@@ -1343,6 +1621,8 @@ function hideLineCall() {
     );
 
     hideLineCallClip();
+
+    hideCourtDiagram();
 }
 
 // ============================================================
@@ -1354,6 +1634,16 @@ function hideLineCall() {
 // play it inline and falls back to a simple "Open clip" link that
 // opens the file in a new tab if inline playback fails.
 // ============================================================
+
+function resetClipDownloadButton() {
+
+    lineCallClipDownloadElement.classList.remove(
+        "disabled"
+    );
+
+    lineCallClipDownloadElement.textContent =
+        "⬇ Download";
+}
 
 function hideLineCallClip() {
 
@@ -1369,6 +1659,11 @@ function hideLineCallClip() {
 
     lineCallClipFallbackElement.style.display = "none";
     lineCallClipFallbackElement.href = "#";
+
+    // Download button: hide + forget the clip.
+    currentClipUrl = null;
+    lineCallClipDownloadElement.style.display = "none";
+    resetClipDownloadButton();
 }
 
 function showLineCallClip(clipUrl) {
@@ -1376,7 +1671,7 @@ function showLineCallClip(clipUrl) {
     if (!clipUrl) {
 
         console.log(
-            "[LineCall] Event has no clip url, nothing to show."
+            "[LineCall] Event has no (valid) clip url, nothing to show."
         );
 
         hideLineCallClip();
@@ -1390,6 +1685,11 @@ function showLineCallClip(clipUrl) {
     );
 
     lineCallClipFallbackElement.href = clipUrl;
+
+    // Enable the Download button for this clip.
+    currentClipUrl = clipUrl;
+    lineCallClipDownloadElement.style.display = "block";
+    resetClipDownloadButton();
 
     lineCallClipVideoElement.style.display = "block";
     lineCallClipFallbackElement.style.display = "none";
@@ -1409,7 +1709,8 @@ function showLineCallClip(clipUrl) {
 
             // Inline playback failed (unsupported container/codec,
             // autoplay blocked, etc). Fall back to a plain link so
-            // the clip is still reachable.
+            // the clip is still reachable. The Download button
+            // stays visible either way.
             console.warn(
                 "[LineCall] 🎬 Clip inline playback failed, showing link instead:",
                 error
@@ -1443,6 +1744,307 @@ lineCallClipVideoElement.addEventListener(
     }
 );
 
+// ============================================================
+// CLIP DOWNLOAD
+//
+// fetch -> blob -> save to device. If that fails (usually CORS on
+// the S3 bucket), fall back to opening the clip in a new tab.
+// ============================================================
+
+lineCallClipDownloadElement.addEventListener(
+    "click",
+    async () => {
+
+        const clipUrl = currentClipUrl;
+
+        if (!clipUrl) {
+            return;
+        }
+
+        // Ignore repeat clicks while a download is running.
+        if (
+            lineCallClipDownloadElement.classList.contains(
+                "disabled"
+            )
+        ) {
+            return;
+        }
+
+        let fileName = "line-call-clip.mov";
+
+        try {
+
+            fileName =
+                decodeURIComponent(
+                    clipUrl.split("?")[0].split("/").pop() ||
+                    fileName
+                );
+
+        } catch (error) {
+
+            // Keep the default file name.
+        }
+
+        console.log(
+            "[LineCall] ⬇ Downloading clip:",
+            clipUrl
+        );
+
+        lineCallClipDownloadElement.classList.add(
+            "disabled"
+        );
+
+        lineCallClipDownloadElement.textContent =
+            "Downloading...";
+
+        try {
+
+            const response =
+                await fetch(clipUrl);
+
+            if (!response.ok) {
+
+                throw new Error(
+                    `Download returned ${response.status}`
+                );
+            }
+
+            const blob =
+                await response.blob();
+
+            const blobUrl =
+                URL.createObjectURL(blob);
+
+            const link =
+                document.createElement("a");
+
+            link.href = blobUrl;
+            link.download = fileName;
+
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+
+            setTimeout(
+                () => URL.revokeObjectURL(blobUrl),
+                10000
+            );
+
+            console.log(
+                "[LineCall] ⬇ Clip downloaded:",
+                fileName
+            );
+
+        } catch (error) {
+
+            // Usually CORS: the S3 bucket doesn't allow this origin.
+            console.warn(
+                "[LineCall] ⬇ fetch download failed, opening in new tab:",
+                error
+            );
+
+            window.open(
+                clipUrl,
+                "_blank",
+                "noopener"
+            );
+
+        } finally {
+
+            // Only restore the button if this clip is still the one
+            // on screen (it may have auto-hidden meanwhile).
+            if (currentClipUrl === clipUrl) {
+                resetClipDownloadButton();
+            }
+        }
+    }
+);
+
+// ============================================================
+// KEEP CLIP VISIBLE WHILE THE VIEWER INTERACTS WITH IT
+//
+// Without this, the 4s auto-hide could remove the clip right as
+// the viewer reaches for the Download button.
+// ============================================================
+
+lineCallClipElement.addEventListener(
+    "pointerenter",
+    () => {
+
+        clearTimeout(
+            lineCallHideTimer
+        );
+    }
+);
+
+lineCallClipElement.addEventListener(
+    "pointerleave",
+    () => {
+
+        if (
+            !lineCallElement.classList.contains("show")
+        ) {
+            return;
+        }
+
+        clearTimeout(
+            lineCallHideTimer
+        );
+
+        lineCallHideTimer =
+            setTimeout(
+                hideLineCall,
+                LINECALL_HIDE_AFTER_LEAVE_MS
+            );
+    }
+);
+
+// ============================================================
+// COURT DIAGRAM (ball landing spot)
+// ============================================================
+
+function hideCourtDiagram() {
+
+    courtPanelElement.classList.remove(
+        "show"
+    );
+
+    courtMarkerElement.style.display =
+        "none";
+
+    courtMarkerElement.classList.remove(
+        "drop"
+    );
+}
+
+function showCourtDiagram(event, result, labelText) {
+
+    const courtLocation =
+        event.court_location;
+
+    if (
+        !courtLocation ||
+        typeof courtLocation.x !== "number" ||
+        typeof courtLocation.y !== "number" ||
+        !isFinite(courtLocation.x) ||
+        !isFinite(courtLocation.y)
+    ) {
+
+        console.warn(
+            "[Court] Event has no usable court_location, skipping diagram.",
+            event
+        );
+
+        hideCourtDiagram();
+
+        return;
+    }
+
+    console.log(
+        "[Court] Plotting ball landing spot:",
+        courtLocation
+    );
+
+    const rawX = courtLocation.x;
+    const rawY = courtLocation.y;
+
+    // The dot may sit up to COURT_MARGIN_FT outside the lines
+    // (so an OUT ball is visibly outside); anything farther is
+    // clamped to that margin so it never leaves the SVG.
+    const clampedX =
+        Math.max(
+            -COURT_MARGIN_FT,
+            Math.min(
+                COURT_WIDTH_FT + COURT_MARGIN_FT,
+                rawX
+            )
+        );
+
+    const clampedY =
+        Math.max(
+            -COURT_MARGIN_FT,
+            Math.min(
+                COURT_LENGTH_FT + COURT_MARGIN_FT,
+                rawY
+            )
+        );
+
+    const cx = clampedX * COURT_SVG_SCALE;
+    const cy = clampedY * COURT_SVG_SCALE;
+
+    courtMarkerElement.setAttribute(
+        "cx",
+        cx
+    );
+
+    courtMarkerElement.setAttribute(
+        "cy",
+        cy
+    );
+
+    courtMarkerElement.style.display =
+        "block";
+
+    // Restart the "drop" animation every time (even if the marker
+    // is already visible from a previous event).
+    courtMarkerElement.classList.remove(
+        "drop"
+    );
+
+    // Force reflow so the animation restarts reliably.
+    void courtMarkerElement.getBBox();
+
+    courtMarkerElement.classList.add(
+        "drop"
+    );
+
+    courtPanelElement.dataset.result =
+        result || "";
+
+    courtInfoResultElement.textContent =
+        labelText ||
+        (
+            result
+                ? result.toUpperCase()
+                : String(
+                    event.type || "EVENT"
+                ).toUpperCase()
+        );
+
+    const details = [];
+
+    if (event.nearest_line) {
+        details.push(event.nearest_line);
+    }
+
+    if (
+        typeof event.nearest_line_distance ===
+        "number"
+    ) {
+        details.push(
+            `${event.nearest_line_distance} ft from line`
+        );
+    }
+
+    courtInfoDetailElement.textContent =
+        details.join(" · ");
+
+    // Show the REAL coordinates from the API (not the clamped ones).
+    const outsideCourt =
+        rawX < 0 ||
+        rawX > COURT_WIDTH_FT ||
+        rawY < 0 ||
+        rawY > COURT_LENGTH_FT;
+
+    courtInfoCoordsElement.textContent =
+        `(${rawX.toFixed(1)} ft, ${rawY.toFixed(1)} ft) from top-left baseline corner` +
+        (outsideCourt ? " · outside court" : "");
+
+    courtPanelElement.classList.add(
+        "show"
+    );
+}
+
 function showLineCall(event) {
 
     console.log(
@@ -1450,10 +2052,32 @@ function showLineCall(event) {
         event
     );
 
-    const result =
+    const rawResult =
         String(
             event.in_out || ""
         ).toLowerCase();
+
+    // Low/medium confidence detections are shown as "UNCERTAIN"
+    // instead of a plain IN/OUT, so the viewer knows this call is
+    // less reliable.
+    const isUncertain =
+        !!event.confidence_level &&
+        event.confidence_level !== "high";
+
+    const result =
+        isUncertain
+            ? "uncertain"
+            : rawResult;
+
+    console.log(
+        "[LineCall] Result resolution:",
+        {
+            rawResult,
+            confidence_level: event.confidence_level,
+            isUncertain,
+            result
+        }
+    );
 
     lineCallElement.dataset.result =
         [
@@ -1464,12 +2088,19 @@ function showLineCall(event) {
             ? result
             : "";
 
+    const labelText =
+        isUncertain
+            ? `UNCERTAIN ${rawResult.toUpperCase()}`
+            : (
+                rawResult
+                    ? rawResult.toUpperCase()
+                    : String(
+                        event.type || "EVENT"
+                    ).toUpperCase()
+            );
+
     lineCallResultElement.textContent =
-        result
-            ? result.toUpperCase()
-            : String(
-                event.type || "EVENT"
-            ).toUpperCase();
+        labelText;
 
     const details = [];
 
@@ -1497,8 +2128,14 @@ function showLineCall(event) {
         "show"
     );
 
-    // Show the replay clip too, if this event has one.
-    showLineCallClip(event.url);
+    // Show the replay clip too, if this event has a valid one.
+    const clipUrl =
+        getSafeClipUrl(event.url);
+
+    showLineCallClip(clipUrl);
+
+    // Plot the ball's landing spot on the court diagram below.
+    showCourtDiagram(event, result, labelText);
 
     clearTimeout(
         lineCallHideTimer
@@ -1507,7 +2144,7 @@ function showLineCall(event) {
     // If a clip came with this event, keep the badge (and clip) up
     // long enough to actually watch it rather than hiding after 1s.
     const visibleMs =
-        event.url
+        clipUrl
             ? LINECALL_SHOW_MS_WITH_CLIP
             : LINECALL_SHOW_MS;
 
@@ -1528,12 +2165,13 @@ function showLineCall(event) {
 // POLL API ONCE
 // ============================================================
 
-async function pollLineCallOnce() {
+async function pollLineCallOnce(loopId) {
 
-    // Do not make API request if user is not connected.
-    if (!lineCallLoopRunning) {
+    // Do not make API request if user is not connected
+    // (or if this loop has been replaced by a newer one).
+    if (!isLoopActive(loopId)) {
         console.log(
-            "[LineCall] Skipping poll, loop is not running."
+            "[LineCall] Skipping poll, loop is not active."
         );
         return;
     }
@@ -1579,7 +2217,7 @@ async function pollLineCallOnce() {
 
         // If connection was lost while
         // request was running, don't process it.
-        if (!lineCallLoopRunning) {
+        if (!isLoopActive(loopId)) {
             console.log(
                 "[LineCall] Loop stopped while request was in flight, discarding response."
             );
@@ -1612,7 +2250,7 @@ async function pollLineCallOnce() {
 
         // Connection may have disappeared
         // while JSON was being processed.
-        if (!lineCallLoopRunning) {
+        if (!isLoopActive(loopId)) {
             console.log(
                 "[LineCall] Loop stopped while parsing JSON, discarding response."
             );
@@ -1773,6 +2411,7 @@ function startLineCallPolling() {
             LINECALL_API_BASE,
             LINECALL_SHOW_MS,
             LINECALL_SHOW_MS_WITH_CLIP,
+            LINECALL_HIDE_AFTER_LEAVE_MS,
             LINECALL_MIN_GAP_MS,
             LINECALL_ERROR_RETRY_MS,
             LINECALL_REQUEST_TIMEOUT_MS
@@ -1788,7 +2427,10 @@ function startLineCallPolling() {
     // A genuinely newer event will be shown.
     lineCallFirstPoll = true;
 
-    lineCallLoop();
+    // New loop ID -> any older loop still winding down will exit.
+    lineCallLoopId++;
+
+    lineCallLoop(lineCallLoopId);
 }
 
 // ============================================================
@@ -1838,35 +2480,39 @@ function stopLineCallPolling() {
         activeLineCallController = null;
     }
 
-    // Hide any currently visible Line Call badge.
-    clearTimeout(
-        lineCallHideTimer
+    // NOTE: we deliberately do NOT clear/hide the line call badge,
+    // clip, download button, or court diagram here. If one is
+    // currently showing, it stays on screen (and still auto-hides on
+    // its own normal timer from showLineCall) even though the
+    // host/stream disconnected — so the viewer doesn't lose the last
+    // call/clip the moment the connection drops.
+    console.log(
+        "[LineCall] Leaving any currently visible line call/clip/court diagram as-is."
     );
-
-    hideLineCall();
 }
 
 // ============================================================
 // CONTINUOUS API POLLING LOOP
 // ============================================================
 
-async function lineCallLoop() {
+async function lineCallLoop(myLoopId) {
 
     console.log(
-        "[LineCall] Polling loop starting."
+        "[LineCall] Polling loop starting. Loop ID:",
+        myLoopId
     );
 
     while (
-        lineCallLoopRunning
+        isLoopActive(myLoopId)
     ) {
 
         try {
 
-            await pollLineCallOnce();
+            await pollLineCallOnce(myLoopId);
 
             // Connection could have been lost
             // while the request was running.
-            if (!lineCallLoopRunning) {
+            if (!isLoopActive(myLoopId)) {
                 break;
             }
 
@@ -1890,18 +2536,15 @@ async function lineCallLoop() {
             //      -> real stop, loop should break.
             //
             //   2) Per-request timeout (LINECALL_REQUEST_TIMEOUT_MS)
-            //      -> a single slow API response, lineCallLoopRunning
-            //      is still TRUE.
-            //      -> NOT a disconnect. Must keep polling, otherwise
-            //      the loop dies silently and never restarts (because
-            //      startLineCallPolling() sees lineCallLoopRunning
-            //      still true and refuses to start a new loop).
+            //      -> a single slow API response, the loop is still
+            //      active.
+            //      -> NOT a disconnect. Must keep polling.
             if (
                 error &&
                 error.name === "AbortError"
             ) {
 
-                if (!lineCallLoopRunning) {
+                if (!isLoopActive(myLoopId)) {
 
                     console.log(
                         "[LineCall] Request aborted (disconnect)."
@@ -1930,7 +2573,7 @@ async function lineCallLoop() {
 
             // IMPORTANT:
             // Don't retry after disconnect.
-            if (!lineCallLoopRunning) {
+            if (!isLoopActive(myLoopId)) {
                 break;
             }
 
@@ -1941,7 +2584,9 @@ async function lineCallLoop() {
     }
 
     console.log(
-        "[LineCall] Polling loop stopped. Total polls made:",
+        "[LineCall] Polling loop stopped. Loop ID:",
+        myLoopId,
+        "| Total polls made:",
         lineCallPollCount
     );
 }
@@ -1957,6 +2602,13 @@ window.addEventListener(
         console.log(
             "[WebViewer] Cleaning up..."
         );
+
+        // Prevent WebSocket auto-reconnect while closing.
+        pageUnloading = true;
+
+        clearTimeout(wsReconnectTimer);
+
+        stopWsPing();
 
         // Stop API polling.
         lineCallLoopRunning = false;
