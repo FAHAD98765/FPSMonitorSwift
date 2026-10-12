@@ -1411,17 +1411,8 @@ if (
     );
 }
 
+// How long the big IN/OUT badge stays on the video.
 const LINECALL_SHOW_MS =
-    1000;
-
-// When the event carries a clip (event.url), keep the badge + clip
-// on screen longer so there's actually time to watch the replay.
-const LINECALL_SHOW_MS_WITH_CLIP =
-    4000;
-
-// After the viewer's pointer leaves the clip (hover/touch), hide
-// the badge + clip after this many ms.
-const LINECALL_HIDE_AFTER_LEAVE_MS =
     2000;
 
 // Small gap between polls so a fast/404 response doesn't turn the
@@ -1450,18 +1441,20 @@ const lineCallResultElement =
 const lineCallDetailElement =
     document.getElementById("lineCallDetail");
 
-// Clip replay elements (the event's "url" field, e.g. an S3 .mov clip)
-const lineCallClipElement =
-    document.getElementById("lineCallClip");
+// Counters (4 cards under the video)
+const counterElements = {
+    uncertainIn: document.getElementById("countUncertainIn"),
+    uncertainOut: document.getElementById("countUncertainOut"),
+    in: document.getElementById("countIn"),
+    out: document.getElementById("countOut")
+};
 
-const lineCallClipVideoElement =
-    document.getElementById("lineCallClipVideo");
+// Replay list (one card per line call that carries a clip url)
+const replaysListElement =
+    document.getElementById("replaysList");
 
-const lineCallClipFallbackElement =
-    document.getElementById("lineCallClipFallback");
-
-const lineCallClipDownloadElement =
-    document.getElementById("lineCallClipDownload");
+const replaysEmptyElement =
+    document.getElementById("replaysEmpty");
 
 // Court diagram elements (ball landing spot, drawn from
 // event.court_location, which is real-world feet — not the pixel
@@ -1501,10 +1494,8 @@ console.log(
         lineCallElement: !!lineCallElement,
         lineCallResultElement: !!lineCallResultElement,
         lineCallDetailElement: !!lineCallDetailElement,
-        lineCallClipElement: !!lineCallClipElement,
-        lineCallClipVideoElement: !!lineCallClipVideoElement,
-        lineCallClipFallbackElement: !!lineCallClipFallbackElement,
-        lineCallClipDownloadElement: !!lineCallClipDownloadElement
+        replaysListElement: !!replaysListElement,
+        counters: Object.values(counterElements).every(Boolean)
     }
 );
 
@@ -1517,9 +1508,6 @@ let lastLineCallEventId = null;
 let lineCallFirstPoll = true;
 
 let lineCallHideTimer = null;
-
-// URL of the clip currently shown (used by the Download button).
-let currentClipUrl = null;
 
 // IMPORTANT:
 // This is NOT a Session ID.
@@ -1620,284 +1608,233 @@ function hideLineCall() {
         "show"
     );
 
-    hideLineCallClip();
-
     hideCourtDiagram();
 }
 
 // ============================================================
-// CLIP REPLAY
+// CALL COUNTERS + REPLAY LIST
 //
-// event.url -> S3 link to the raw clip for this event (currently
-// .mov). Browser support for .mov is inconsistent (Safari plays it,
-// Chrome/Firefox often can't depending on codec), so this tries to
-// play it inline and falls back to a simple "Open clip" link that
-// opens the file in a new tab if inline playback fails.
+// Every new line call:
+//   - bumps one of the 4 counters
+//   - if the event has a clip url, adds a "Call #N" replay card
+//     under the video (newest at the end)
 // ============================================================
 
-function resetClipDownloadButton() {
+const MAX_REPLAYS = 40;
 
-    lineCallClipDownloadElement.classList.remove(
-        "disabled"
-    );
+let totalCalls = 0;
 
-    lineCallClipDownloadElement.textContent =
-        "⬇ Download";
-}
+const callCounts = {
+    uncertainIn: 0,
+    uncertainOut: 0,
+    in: 0,
+    out: 0
+};
 
-function hideLineCallClip() {
+function bumpCounter(rawResult, isUncertain) {
 
-    lineCallClipElement.classList.remove(
-        "show"
-    );
+    let key = null;
 
-    // Stop any playback/download in progress.
-    lineCallClipVideoElement.pause();
-    lineCallClipVideoElement.removeAttribute("src");
-    lineCallClipVideoElement.load();
-    lineCallClipVideoElement.style.display = "block";
+    if (rawResult === "in") {
+        key = isUncertain ? "uncertainIn" : "in";
+    } else if (rawResult === "out") {
+        key = isUncertain ? "uncertainOut" : "out";
+    }
 
-    lineCallClipFallbackElement.style.display = "none";
-    lineCallClipFallbackElement.href = "#";
-
-    // Download button: hide + forget the clip.
-    currentClipUrl = null;
-    lineCallClipDownloadElement.style.display = "none";
-    resetClipDownloadButton();
-}
-
-function showLineCallClip(clipUrl) {
-
-    if (!clipUrl) {
-
-        console.log(
-            "[LineCall] Event has no (valid) clip url, nothing to show."
-        );
-
-        hideLineCallClip();
-
+    if (!key) {
         return;
     }
 
-    console.log(
-        "[LineCall] 🎬 Loading clip:",
-        clipUrl
-    );
+    callCounts[key]++;
 
-    lineCallClipFallbackElement.href = clipUrl;
-
-    // Enable the Download button for this clip.
-    currentClipUrl = clipUrl;
-    lineCallClipDownloadElement.style.display = "block";
-    resetClipDownloadButton();
-
-    lineCallClipVideoElement.style.display = "block";
-    lineCallClipFallbackElement.style.display = "none";
-
-    lineCallClipVideoElement.src = clipUrl;
-
-    lineCallClipVideoElement
-        .play()
-        .then(() => {
-
-            console.log(
-                "[LineCall] 🎬 Clip playing inline:",
-                clipUrl
-            );
-        })
-        .catch((error) => {
-
-            // Inline playback failed (unsupported container/codec,
-            // autoplay blocked, etc). Fall back to a plain link so
-            // the clip is still reachable. The Download button
-            // stays visible either way.
-            console.warn(
-                "[LineCall] 🎬 Clip inline playback failed, showing link instead:",
-                error
-            );
-
-            lineCallClipVideoElement.style.display = "none";
-            lineCallClipFallbackElement.style.display = "block";
-        });
-
-    lineCallClipElement.classList.add(
-        "show"
-    );
+    counterElements[key].textContent =
+        String(callCounts[key]);
 }
 
-// If the <video> element itself reports an error (e.g. browser can't
-// decode this .mov at all), fall back to the link too.
-lineCallClipVideoElement.addEventListener(
-    "error",
-    () => {
-
-        if (!lineCallClipVideoElement.getAttribute("src")) {
-            return;
-        }
-
-        console.warn(
-            "[LineCall] 🎬 Clip <video> element errored (unsupported format?), showing link instead."
-        );
-
-        lineCallClipVideoElement.style.display = "none";
-        lineCallClipFallbackElement.style.display = "block";
-    }
-);
-
-// ============================================================
-// CLIP DOWNLOAD
-//
 // fetch -> blob -> save to device. If that fails (usually CORS on
 // the S3 bucket), fall back to opening the clip in a new tab.
-// ============================================================
+async function downloadClip(clipUrl, button) {
 
-lineCallClipDownloadElement.addEventListener(
-    "click",
-    async () => {
+    if (button.classList.contains("busy")) {
+        return;
+    }
 
-        const clipUrl = currentClipUrl;
+    let fileName = "line-call-clip.mov";
 
-        if (!clipUrl) {
-            return;
-        }
+    try {
 
-        // Ignore repeat clicks while a download is running.
-        if (
-            lineCallClipDownloadElement.classList.contains(
-                "disabled"
-            )
-        ) {
-            return;
-        }
-
-        let fileName = "line-call-clip.mov";
-
-        try {
-
-            fileName =
-                decodeURIComponent(
-                    clipUrl.split("?")[0].split("/").pop() ||
-                    fileName
-                );
-
-        } catch (error) {
-
-            // Keep the default file name.
-        }
-
-        console.log(
-            "[LineCall] ⬇ Downloading clip:",
-            clipUrl
-        );
-
-        lineCallClipDownloadElement.classList.add(
-            "disabled"
-        );
-
-        lineCallClipDownloadElement.textContent =
-            "Downloading...";
-
-        try {
-
-            const response =
-                await fetch(clipUrl);
-
-            if (!response.ok) {
-
-                throw new Error(
-                    `Download returned ${response.status}`
-                );
-            }
-
-            const blob =
-                await response.blob();
-
-            const blobUrl =
-                URL.createObjectURL(blob);
-
-            const link =
-                document.createElement("a");
-
-            link.href = blobUrl;
-            link.download = fileName;
-
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-
-            setTimeout(
-                () => URL.revokeObjectURL(blobUrl),
-                10000
-            );
-
-            console.log(
-                "[LineCall] ⬇ Clip downloaded:",
+        fileName =
+            decodeURIComponent(
+                clipUrl.split("?")[0].split("/").pop() ||
                 fileName
             );
 
-        } catch (error) {
+    } catch (error) {
 
-            // Usually CORS: the S3 bucket doesn't allow this origin.
+        // Keep the default file name.
+    }
+
+    console.log(
+        "[Replay] ⬇ Downloading clip:",
+        clipUrl
+    );
+
+    button.classList.add("busy");
+
+    button.textContent = "...";
+
+    try {
+
+        const response =
+            await fetch(clipUrl);
+
+        if (!response.ok) {
+
+            throw new Error(
+                `Download returned ${response.status}`
+            );
+        }
+
+        const blob =
+            await response.blob();
+
+        const blobUrl =
+            URL.createObjectURL(blob);
+
+        const link =
+            document.createElement("a");
+
+        link.href = blobUrl;
+        link.download = fileName;
+
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+
+        setTimeout(
+            () => URL.revokeObjectURL(blobUrl),
+            10000
+        );
+
+    } catch (error) {
+
+        // Usually CORS: the S3 bucket doesn't allow this origin.
+        console.warn(
+            "[Replay] ⬇ fetch download failed, opening in new tab:",
+            error
+        );
+
+        window.open(
+            clipUrl,
+            "_blank",
+            "noopener"
+        );
+
+    } finally {
+
+        button.classList.remove("busy");
+
+        button.textContent = "⬇";
+    }
+}
+
+function addReplay(clipUrl, callNumber, result) {
+
+    console.log(
+        "[Replay] 🎬 Adding replay card:",
+        callNumber,
+        clipUrl
+    );
+
+    const card =
+        document.createElement("div");
+
+    card.className = "replay-card";
+
+    card.dataset.result =
+        result || "";
+
+    // "#t=0.1" makes the browser show a frame as the thumbnail.
+    const video =
+        document.createElement("video");
+
+    video.controls = true;
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "metadata";
+    video.src = clipUrl + "#t=0.1";
+
+    // Browser can't decode this clip (e.g. .mov codec) -> show a link.
+    video.addEventListener(
+        "error",
+        () => {
+
             console.warn(
-                "[LineCall] ⬇ fetch download failed, opening in new tab:",
-                error
+                "[Replay] Clip <video> errored (unsupported format?), showing link instead:",
+                clipUrl
             );
 
-            window.open(
-                clipUrl,
-                "_blank",
-                "noopener"
-            );
+            const fallback =
+                document.createElement("a");
 
-        } finally {
+            fallback.className = "replay-fallback";
+            fallback.href = clipUrl;
+            fallback.target = "_blank";
+            fallback.rel = "noopener";
+            fallback.textContent = "Open clip";
 
-            // Only restore the button if this clip is still the one
-            // on screen (it may have auto-hidden meanwhile).
-            if (currentClipUrl === clipUrl) {
-                resetClipDownloadButton();
-            }
+            video.replaceWith(fallback);
         }
-    }
-);
+    );
 
-// ============================================================
-// KEEP CLIP VISIBLE WHILE THE VIEWER INTERACTS WITH IT
-//
-// Without this, the 4s auto-hide could remove the clip right as
-// the viewer reaches for the Download button.
-// ============================================================
+    const footer =
+        document.createElement("div");
 
-lineCallClipElement.addEventListener(
-    "pointerenter",
-    () => {
+    footer.className = "replay-footer";
 
-        clearTimeout(
-            lineCallHideTimer
+    const title =
+        document.createElement("span");
+
+    title.className = "replay-title";
+    title.textContent = `Call #${callNumber}`;
+
+    const downloadButton =
+        document.createElement("button");
+
+    downloadButton.type = "button";
+    downloadButton.className = "replay-download";
+    downloadButton.title = "Download clip";
+    downloadButton.textContent = "⬇";
+
+    downloadButton.addEventListener(
+        "click",
+        () => downloadClip(
+            clipUrl,
+            downloadButton
+        )
+    );
+
+    footer.appendChild(title);
+    footer.appendChild(downloadButton);
+
+    card.appendChild(video);
+    card.appendChild(footer);
+
+    replaysListElement.appendChild(card);
+
+    replaysEmptyElement.style.display =
+        "none";
+
+    // Keep memory/DOM in check on very long sessions.
+    while (
+        replaysListElement.children.length > MAX_REPLAYS
+    ) {
+
+        replaysListElement.removeChild(
+            replaysListElement.firstChild
         );
     }
-);
-
-lineCallClipElement.addEventListener(
-    "pointerleave",
-    () => {
-
-        if (
-            !lineCallElement.classList.contains("show")
-        ) {
-            return;
-        }
-
-        clearTimeout(
-            lineCallHideTimer
-        );
-
-        lineCallHideTimer =
-            setTimeout(
-                hideLineCall,
-                LINECALL_HIDE_AFTER_LEAVE_MS
-            );
-    }
-);
+}
 
 // ============================================================
 // COURT DIAGRAM (ball landing spot)
@@ -2128,11 +2065,25 @@ function showLineCall(event) {
         "show"
     );
 
-    // Show the replay clip too, if this event has a valid one.
+    // Count this call, and add its replay card if it has a clip.
+    totalCalls++;
+
+    bumpCounter(
+        rawResult,
+        isUncertain
+    );
+
     const clipUrl =
         getSafeClipUrl(event.url);
 
-    showLineCallClip(clipUrl);
+    if (clipUrl) {
+
+        addReplay(
+            clipUrl,
+            totalCalls,
+            result
+        );
+    }
 
     // Plot the ball's landing spot on the court diagram below.
     showCourtDiagram(event, result, labelText);
@@ -2141,23 +2092,16 @@ function showLineCall(event) {
         lineCallHideTimer
     );
 
-    // If a clip came with this event, keep the badge (and clip) up
-    // long enough to actually watch it rather than hiding after 1s.
-    const visibleMs =
-        clipUrl
-            ? LINECALL_SHOW_MS_WITH_CLIP
-            : LINECALL_SHOW_MS;
-
     console.log(
         "[LineCall] Badge will auto-hide after",
-        visibleMs,
+        LINECALL_SHOW_MS,
         "ms"
     );
 
     lineCallHideTimer =
         setTimeout(
             hideLineCall,
-            visibleMs
+            LINECALL_SHOW_MS
         );
 }
 
@@ -2410,8 +2354,6 @@ function startLineCallPolling() {
         {
             LINECALL_API_BASE,
             LINECALL_SHOW_MS,
-            LINECALL_SHOW_MS_WITH_CLIP,
-            LINECALL_HIDE_AFTER_LEAVE_MS,
             LINECALL_MIN_GAP_MS,
             LINECALL_ERROR_RETRY_MS,
             LINECALL_REQUEST_TIMEOUT_MS
@@ -2481,7 +2423,7 @@ function stopLineCallPolling() {
     }
 
     // NOTE: we deliberately do NOT clear/hide the line call badge,
-    // clip, download button, or court diagram here. If one is
+    // or court diagram here (replay cards are never removed). If one is
     // currently showing, it stays on screen (and still auto-hides on
     // its own normal timer from showLineCall) even though the
     // host/stream disconnected — so the viewer doesn't lose the last

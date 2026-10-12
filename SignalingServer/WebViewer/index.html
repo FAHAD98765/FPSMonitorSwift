@@ -18,6 +18,8 @@
         :root {
             --state-color: #f59e0b;
             --state-glow: rgba(245, 158, 11, 0.6);
+            --red: #ef4444;
+            --red-glow: rgba(239, 68, 68, 0.6);
         }
 
         body[data-state="connecting"] {
@@ -31,8 +33,8 @@
         }
 
         body[data-state="disconnected"] {
-            --state-color: #ef4444;
-            --state-glow: rgba(239, 68, 68, 0.65);
+            --state-color: #8b929d;
+            --state-glow: rgba(139, 146, 157, 0.4);
         }
 
         @keyframes pulse {
@@ -58,21 +60,19 @@
                 Helvetica,
                 Arial,
                 sans-serif;
-            background: #0b0d10;
+            background: #08090b;
             color: #ffffff;
         }
 
         body {
             min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 24px;
+            padding: 56px 24px 40px;
         }
 
         .app {
             width: 100%;
-            max-width: 1200px;
+            max-width: 980px;
+            margin: 0 auto;
         }
 
         /* =========================
@@ -82,39 +82,30 @@
         .header {
             display: flex;
             align-items: center;
-            justify-content: space-between;
-            margin-bottom: 18px;
-            gap: 16px;
+            gap: 12px;
+            margin-bottom: 16px;
         }
 
-        .brand {
+        .logo {
+            width: 32px;
+            height: 32px;
+            border-radius: 9px;
             display: flex;
             align-items: center;
-            gap: 12px;
-        }
+            justify-content: center;
 
-        .brand-dot {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            background: var(--state-color);
-            box-shadow: 0 0 14px var(--state-glow);
-            transition: background 0.25s ease, box-shadow 0.25s ease;
-        }
-
-        body[data-state="connecting"] .brand-dot {
-            animation: pulse 1.2s ease-in-out infinite;
-        }
-
-        .brand h1 {
-            font-size: 20px;
-            font-weight: 700;
-            letter-spacing: -0.3px;
-        }
-
-        .viewer-label {
             font-size: 13px;
-            color: #8b929d;
+            font-weight: 800;
+            color: #ffffff;
+
+            background: linear-gradient(135deg, #fb923c, #ea580c);
+            box-shadow: 0 0 16px rgba(249, 115, 22, 0.45);
+        }
+
+        .header h1 {
+            font-size: 19px;
+            font-weight: 800;
+            letter-spacing: -0.3px;
         }
 
         /* =========================
@@ -125,11 +116,10 @@
             position: relative;
             width: 100%;
             background: #000;
-            border-radius: 18px;
+            border-radius: 16px;
             overflow: hidden;
-            border: 1px solid #20242b;
-            box-shadow:
-                0 20px 60px rgba(0, 0, 0, 0.45);
+            border: 1px solid #1c2027;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
         }
 
         #remoteVideo {
@@ -144,56 +134,51 @@
 
         /* =========================
            VIDEO OVERLAY
-           (covers the whole video so the line call
-            can be centered inside it)
         ========================= */
 
         .video-overlay {
             position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
+            inset: 0;
+            padding: 14px;
+            pointer-events: none;
 
             display: flex;
             justify-content: space-between;
             align-items: flex-start;
-
-            padding: 16px;
-            pointer-events: none;
         }
 
         .status-badge,
         .fps-badge {
-            background: rgba(0, 0, 0, 0.65);
+            background: rgba(20, 22, 26, 0.78);
             backdrop-filter: blur(10px);
             -webkit-backdrop-filter: blur(10px);
 
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 999px;
 
-            padding: 8px 12px;
+            padding: 6px 12px;
 
-            font-size: 13px;
-            font-weight: 600;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.2px;
         }
 
         .status-badge {
             color: #ffffff;
+            text-transform: uppercase;
             display: inline-flex;
             align-items: center;
             gap: 8px;
         }
 
-        /* colored signal dot inside the status badge */
         .status-badge::before {
             content: "";
-            width: 8px;
-            height: 8px;
+            width: 7px;
+            height: 7px;
             border-radius: 50%;
             flex-shrink: 0;
             background: var(--state-color);
-            box-shadow: 0 0 10px var(--state-glow);
+            box-shadow: 0 0 8px var(--state-glow);
             transition: background 0.25s ease, box-shadow 0.25s ease;
         }
 
@@ -202,8 +187,8 @@
         }
 
         .fps-badge {
-            color: var(--state-color);
-            transition: color 0.25s ease;
+            color: #22c55e;
+            font-size: 11px;
         }
 
         /* =========================
@@ -211,17 +196,7 @@
            (big, red, centered on the video)
         ========================= */
 
-        .overlay-right {
-            display: flex;
-            flex-direction: column;
-            align-items: flex-end;
-            gap: 6px;
-        }
-
         .line-call {
-            --call-color: #ef4444;
-            --call-glow: rgba(239, 68, 68, 0.6);
-
             position: absolute;
             top: 50%;
             left: 50%;
@@ -240,8 +215,8 @@
             background: rgba(0, 0, 0, 0.72);
             backdrop-filter: blur(10px);
             -webkit-backdrop-filter: blur(10px);
-            border: 2px solid var(--call-color);
-            box-shadow: 0 0 30px var(--call-glow);
+            border: 2px solid var(--red);
+            box-shadow: 0 0 30px var(--red-glow);
 
             opacity: 0;
             pointer-events: none;
@@ -262,8 +237,8 @@
             font-weight: 900;
             line-height: 1;
             letter-spacing: 3px;
-            color: var(--call-color);
-            text-shadow: 0 0 18px var(--call-glow);
+            color: var(--red);
+            text-shadow: 0 0 18px var(--red-glow);
         }
 
         .line-call-detail {
@@ -277,90 +252,9 @@
         }
 
         /* =========================
-           LINE CALL CLIP (replay)
-        ========================= */
-
-        .line-call-clip {
-            margin-top: 6px;
-            width: 160px;
-
-            border-radius: 8px;
-            overflow: hidden;
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            background: #000;
-
-            opacity: 0;
-            transform: translateY(-4px);
-            pointer-events: none;
-            transition: opacity 0.12s ease, transform 0.12s ease;
-        }
-
-        .line-call-clip.show {
-            opacity: 1;
-            transform: translateY(0);
-            pointer-events: auto;
-        }
-
-        .line-call-clip video {
-            display: block;
-            width: 100%;
-            height: auto;
-        }
-
-        .line-call-clip-fallback {
-            display: block;
-            padding: 6px 8px;
-            font-size: 10px;
-            font-weight: 700;
-            color: #9ad6ff;
-            text-align: center;
-            text-decoration: none;
-        }
-
-        .line-call-clip-fallback:hover {
-            text-decoration: underline;
-        }
-
-        .line-call-clip-actions {
-            display: flex;
-            border-top: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        .line-call-clip-download {
-            flex: 1;
-            display: none;
-
-            padding: 6px 4px;
-
-            font-size: 10px;
-            font-weight: 700;
-            color: #9ad6ff;
-            text-align: center;
-            text-decoration: none;
-
-            background: none;
-            border: none;
-            cursor: pointer;
-        }
-
-        .line-call-clip-download:hover {
-            text-decoration: underline;
-        }
-
-        .line-call-clip-download.disabled {
-            color: #6f7782;
-            cursor: default;
-            pointer-events: none;
-        }
-
-        @media (max-width: 480px) {
-            .line-call-clip {
-                width: 120px;
-            }
-        }
-
-        /* =========================
-           COURT DIAGRAM (ball landing spot)
+           COURT DIAGRAM
+           (small overlay, bottom-left of the video, so
+            showing it never moves the page layout)
         ========================= */
 
         @keyframes dropIn {
@@ -381,35 +275,37 @@
         }
 
         .court-panel {
-            /* always red: dot + result text */
             --call-color: #ef4444;
 
-            margin-top: 14px;
+            position: absolute;
+            left: 14px;
+            bottom: 14px;
+            z-index: 4;
 
             display: flex;
             align-items: center;
-            gap: 16px;
+            gap: 12px;
 
-            padding: 14px 16px;
+            padding: 10px 14px 10px 10px;
 
-            background: #12151a;
-            border: 1px solid #20242b;
-            border-radius: 14px;
+            background: rgba(14, 17, 21, 0.85);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
 
             opacity: 0;
-            max-height: 0;
-            overflow: hidden;
+            pointer-events: none;
             transition: opacity 0.15s ease;
         }
 
         .court-panel.show {
             opacity: 1;
-            max-height: 300px;
         }
 
         .court-diagram-wrap {
             flex-shrink: 0;
-            width: 110px;
+            width: 64px;
         }
 
         .court-diagram-wrap svg {
@@ -451,83 +347,196 @@
         .court-info {
             display: flex;
             flex-direction: column;
-            gap: 4px;
+            gap: 3px;
             min-width: 0;
         }
 
         .court-info-result {
-            font-size: 16px;
+            font-size: 14px;
             font-weight: 800;
             letter-spacing: 1px;
             color: var(--call-color, #ffffff);
         }
 
         .court-info-detail {
-            font-size: 12px;
-            color: #aeb5bf;
+            font-size: 11px;
+            color: #c3c9d2;
         }
 
         .court-info-coords {
-            font-size: 11px;
-            color: #6f7782;
-        }
-
-        @media (max-width: 480px) {
-
-            .court-panel {
-                padding: 10px 12px;
-                gap: 10px;
-            }
-
-            .court-diagram-wrap {
-                width: 76px;
-            }
-
-            .court-info-result {
-                font-size: 14px;
-            }
-
-            .court-info-detail {
-                font-size: 11px;
-            }
-
-            .court-info-coords {
-                font-size: 10px;
-            }
+            font-size: 10px;
+            color: #8b929d;
+            max-width: 170px;
         }
 
         /* =========================
-           INFO
+           COUNTERS (4 cards under the video)
+        ========================= */
+
+        .counters {
+            margin-top: 12px;
+
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+        }
+
+        .counter {
+            background: #0d1014;
+            border: 1px solid #1c2027;
+            border-radius: 10px;
+            padding: 10px 8px;
+            text-align: center;
+        }
+
+        .counter-label {
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+            text-transform: uppercase;
+            color: #8b929d;
+        }
+
+        .counter-value {
+            margin-top: 4px;
+            font-size: 20px;
+            font-weight: 800;
+            color: var(--red);
+        }
+
+        /* =========================
+           LINE CALL REPLAYS
+        ========================= */
+
+        .replays-title {
+            margin-top: 22px;
+            margin-bottom: 10px;
+
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+            color: #8b929d;
+        }
+
+        .replays-empty {
+            font-size: 12px;
+            color: #5b626d;
+        }
+
+        .replays-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, 186px);
+            gap: 10px;
+        }
+
+        .replay-card {
+            background: #0d1014;
+            border: 1px solid #1c2027;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        .replay-card video {
+            display: block;
+            width: 100%;
+            height: 102px;
+            object-fit: contain;
+            background: #000;
+        }
+
+        .replay-fallback {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 102px;
+
+            font-size: 12px;
+            font-weight: 700;
+            color: #9ad6ff;
+            text-decoration: none;
+            background: #000;
+        }
+
+        .replay-fallback:hover {
+            text-decoration: underline;
+        }
+
+        .replay-footer {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            position: relative;
+
+            padding: 7px 28px;
+            border-top: 1px solid #1c2027;
+        }
+
+        .replay-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--red);
+        }
+
+        .replay-download {
+            position: absolute;
+            right: 6px;
+            top: 50%;
+            transform: translateY(-50%);
+
+            width: 22px;
+            height: 22px;
+            border-radius: 6px;
+
+            font-size: 12px;
+            line-height: 1;
+            color: #9ad6ff;
+
+            background: none;
+            border: none;
+            cursor: pointer;
+        }
+
+        .replay-download:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .replay-download.busy {
+            color: #6f7782;
+            cursor: default;
+            pointer-events: none;
+        }
+
+        /* =========================
+           CONNECTION INFO (small footer)
         ========================= */
 
         .info {
-            margin-top: 14px;
+            margin-top: 28px;
 
             display: flex;
             align-items: center;
             justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 8px 12px;
 
-            gap: 12px;
-
-            padding: 14px 16px;
-
-            background: #12151a;
-            border: 1px solid #20242b;
-            border-radius: 14px;
+            padding-top: 12px;
+            border-top: 1px solid #14171c;
         }
 
         .connection {
             display: flex;
             align-items: center;
-            gap: 9px;
+            gap: 8px;
 
-            font-size: 14px;
-            color: #aeb5bf;
+            font-size: 12px;
+            color: #8b929d;
         }
 
         .connection-dot {
-            width: 8px;
-            height: 8px;
+            width: 7px;
+            height: 7px;
             border-radius: 50%;
             background: var(--state-color);
             box-shadow: 0 0 8px var(--state-glow);
@@ -545,9 +554,8 @@
         }
 
         .session {
-            font-size: 12px;
-            color: #6f7782;
-            text-align: right;
+            font-size: 11px;
+            color: #5b626d;
             word-break: break-all;
         }
 
@@ -558,24 +566,7 @@
         @media (max-width: 768px) {
 
             body {
-                padding: 14px;
-                align-items: flex-start;
-            }
-
-            .app {
-                margin-top: 8px;
-            }
-
-            .header {
-                margin-bottom: 12px;
-            }
-
-            .brand h1 {
-                font-size: 18px;
-            }
-
-            .viewer-label {
-                font-size: 12px;
+                padding: 24px 14px 32px;
             }
 
             .video-card {
@@ -591,19 +582,13 @@
                 padding: 10px;
             }
 
-            .status-badge,
-            .fps-badge {
-                font-size: 11px;
-                padding: 7px 9px;
-            }
-
             .line-call-result {
                 font-size: 44px;
             }
 
-            .info {
-                padding: 12px;
-                border-radius: 12px;
+            .court-panel {
+                left: 10px;
+                bottom: 10px;
             }
         }
 
@@ -611,39 +596,25 @@
            RESPONSIVE - MOBILE
         ========================= */
 
+        @media (max-width: 600px) {
+
+            .counters {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .replays-list {
+                grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            }
+        }
+
         @media (max-width: 480px) {
 
             body {
-                padding: 10px;
+                padding: 16px 10px 28px;
             }
 
-            .app {
-                margin-top: 4px;
-            }
-
-            .header {
-                margin-bottom: 10px;
-            }
-
-            .brand {
-                gap: 9px;
-            }
-
-            .brand-dot {
-                width: 9px;
-                height: 9px;
-            }
-
-            .brand h1 {
-                font-size: 16px;
-            }
-
-            .viewer-label {
-                font-size: 11px;
-            }
-
-            .video-card {
-                border-radius: 12px;
+            .header h1 {
+                font-size: 17px;
             }
 
             #remoteVideo {
@@ -658,8 +629,7 @@
             .status-badge,
             .fps-badge {
                 font-size: 10px;
-                padding: 6px 8px;
-                border-radius: 8px;
+                padding: 5px 9px;
             }
 
             .line-call {
@@ -680,17 +650,25 @@
                 text-align: center;
             }
 
-            .info {
-                margin-top: 10px;
-                padding: 10px 12px;
-
-                flex-direction: column;
-                align-items: flex-start;
+            .court-panel {
+                padding: 6px 10px 6px 6px;
+                gap: 8px;
             }
 
-            .session {
-                text-align: left;
-                width: 100%;
+            .court-diagram-wrap {
+                width: 46px;
+            }
+
+            .court-info-result {
+                font-size: 12px;
+            }
+
+            .court-info-detail {
+                font-size: 10px;
+            }
+
+            .court-info-coords {
+                display: none;
             }
         }
     </style>
@@ -702,17 +680,8 @@
 
         <!-- HEADER -->
         <header class="header">
-
-            <div class="brand">
-                <span class="brand-dot"></span>
-
-                <h1>CALLITNOW</h1>
-            </div>
-
-            <span class="viewer-label">
-                Live Viewer
-            </span>
-
+            <div class="logo">CN</div>
+            <h1>CALLITNOW</h1>
         </header>
 
 
@@ -726,7 +695,6 @@
                 muted
             ></video>
 
-
             <!-- VIDEO OVERLAY -->
             <div class="video-overlay">
 
@@ -737,49 +705,76 @@
                     Connecting...
                 </div>
 
-                <div class="overlay-right">
+                <div
+                    class="fps-badge"
+                    id="fps"
+                >
+                    FPS: --
+                </div>
 
-                    <div
-                        class="fps-badge"
-                        id="fps"
-                    >
-                        FPS: --
-                    </div>
+                <!-- LINE CALL (centered on the video, big, red) -->
+                <div class="line-call" id="lineCall">
+                    <div class="line-call-title">LINE CALL</div>
+                    <div class="line-call-result" id="lineCallResult">--</div>
+                    <div class="line-call-detail" id="lineCallDetail"></div>
+                </div>
 
-                    <!-- LINE CALL (centered on the video, big, red) -->
-                    <div class="line-call" id="lineCall">
-                        <div class="line-call-title">LINE CALL</div>
-                        <div class="line-call-result" id="lineCallResult">--</div>
-                        <div class="line-call-detail" id="lineCallDetail"></div>
-                    </div>
+            </div>
 
-                    <!-- CLIP REPLAY (shows under the FPS badge when
-                         the event carries a "url" pointing to the clip) -->
-                    <div class="line-call-clip" id="lineCallClip">
-                        <video
-                            id="lineCallClipVideo"
-                            muted
-                            playsinline
-                            autoplay
-                        ></video>
-                        <a
-                            class="line-call-clip-fallback"
-                            id="lineCallClipFallback"
-                            href="#"
-                            target="_blank"
-                            rel="noopener"
+            <!-- BALL LANDING SPOT (court diagram, bottom-left of video) -->
+            <div class="court-panel" id="courtPanel">
+
+                <div class="court-diagram-wrap">
+                    <svg viewBox="-30 -30 260 500" xmlns="http://www.w3.org/2000/svg">
+
+                        <!-- Court outline: 20ft wide x 44ft long, 10 units per ft -->
+                        <rect
+                            class="court-outline"
+                            x="1" y="1" width="198" height="438"
+                        ></rect>
+
+                        <!-- Net (middle of the court) -->
+                        <line
+                            class="court-net"
+                            x1="0" y1="220" x2="200" y2="220"
+                        ></line>
+
+                        <!-- NVZ / kitchen lines, 7ft from net each side -->
+                        <line
+                            class="court-nvz-line"
+                            x1="0" y1="150" x2="200" y2="150"
+                        ></line>
+                        <line
+                            class="court-nvz-line"
+                            x1="0" y1="290" x2="200" y2="290"
+                        ></line>
+
+                        <!-- Center service lines (net to kitchen, both halves) -->
+                        <line
+                            class="court-center-line"
+                            x1="100" y1="0" x2="100" y2="150"
+                        ></line>
+                        <line
+                            class="court-center-line"
+                            x1="100" y1="290" x2="100" y2="440"
+                        ></line>
+
+                        <!-- Ball landing marker -->
+                        <circle
+                            id="courtMarker"
+                            cx="100"
+                            cy="220"
+                            r="7"
                             style="display: none;"
-                        >Open clip</a>
+                        ></circle>
 
-                        <div class="line-call-clip-actions">
-                            <button
-                                type="button"
-                                class="line-call-clip-download"
-                                id="lineCallClipDownload"
-                            >⬇ Download</button>
-                        </div>
-                    </div>
+                    </svg>
+                </div>
 
+                <div class="court-info">
+                    <div class="court-info-result" id="courtInfoResult">--</div>
+                    <div class="court-info-detail" id="courtInfoDetail"></div>
+                    <div class="court-info-coords" id="courtInfoCoords"></div>
                 </div>
 
             </div>
@@ -787,63 +782,40 @@
         </section>
 
 
-        <!-- BALL LANDING SPOT (court diagram) -->
-        <section class="court-panel" id="courtPanel">
+        <!-- COUNTERS -->
+        <section class="counters">
 
-            <div class="court-diagram-wrap">
-                <svg viewBox="-30 -30 260 500" xmlns="http://www.w3.org/2000/svg">
-
-                    <!-- Court outline: 20ft wide x 44ft long, 10 units per ft -->
-                    <rect
-                        class="court-outline"
-                        x="1" y="1" width="198" height="438"
-                    ></rect>
-
-                    <!-- Net (middle of the court) -->
-                    <line
-                        class="court-net"
-                        x1="0" y1="220" x2="200" y2="220"
-                    ></line>
-
-                    <!-- NVZ / kitchen lines, 7ft from net each side -->
-                    <line
-                        class="court-nvz-line"
-                        x1="0" y1="150" x2="200" y2="150"
-                    ></line>
-                    <line
-                        class="court-nvz-line"
-                        x1="0" y1="290" x2="200" y2="290"
-                    ></line>
-
-                    <!-- Center service lines (net to kitchen, both halves) -->
-                    <line
-                        class="court-center-line"
-                        x1="100" y1="0" x2="100" y2="150"
-                    ></line>
-                    <line
-                        class="court-center-line"
-                        x1="100" y1="290" x2="100" y2="440"
-                    ></line>
-
-                    <!-- Ball landing marker -->
-                    <circle
-                        id="courtMarker"
-                        cx="100"
-                        cy="220"
-                        r="7"
-                        style="display: none;"
-                    ></circle>
-
-                </svg>
+            <div class="counter">
+                <div class="counter-label">Uncertain line call in</div>
+                <div class="counter-value" id="countUncertainIn">0</div>
             </div>
 
-            <div class="court-info">
-                <div class="court-info-result" id="courtInfoResult">--</div>
-                <div class="court-info-detail" id="courtInfoDetail"></div>
-                <div class="court-info-coords" id="courtInfoCoords"></div>
+            <div class="counter">
+                <div class="counter-label">Uncertain line call out</div>
+                <div class="counter-value" id="countUncertainOut">0</div>
+            </div>
+
+            <div class="counter">
+                <div class="counter-label">Line call in</div>
+                <div class="counter-value" id="countIn">0</div>
+            </div>
+
+            <div class="counter">
+                <div class="counter-label">Line call out</div>
+                <div class="counter-value" id="countOut">0</div>
             </div>
 
         </section>
+
+
+        <!-- LINE CALL REPLAYS -->
+        <h2 class="replays-title">Line call replays</h2>
+
+        <p class="replays-empty" id="replaysEmpty">
+            No replays yet. Each line call clip will appear here.
+        </p>
+
+        <section class="replays-list" id="replaysList"></section>
 
 
         <!-- CONNECTION INFO -->
@@ -899,7 +871,7 @@
 
     <script>
         /*
-         * CONNECTION STATE (green = connected, red = disconnected,
+         * CONNECTION STATE (green = connected, grey = disconnected,
          * amber = connecting).
          *
          * app.js calls:
