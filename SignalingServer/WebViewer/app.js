@@ -1381,8 +1381,8 @@ requestAnimationFrame(
 // DISCONNECTED:
 //   API polling completely stop hoti hai.
 //   Current request bhi abort hoti hai.
-//   Jo line call / clip / court diagram screen par hai woh
-//   apne normal timer tak wahin rehta hai (hide nahi hota).
+//   Jo line call / clip screen par hai woh apne normal timer
+//   tak wahin rehta hai (hide nahi hota).
 //
 // RECONNECTED:
 //   API polling dobara start hoti hai (naya loop ID, purana
@@ -1441,52 +1441,12 @@ const lineCallResultElement =
 const lineCallDetailElement =
     document.getElementById("lineCallDetail");
 
-// Counters (4 cards under the video)
-const counterElements = {
-    uncertainIn: document.getElementById("countUncertainIn"),
-    uncertainOut: document.getElementById("countUncertainOut"),
-    in: document.getElementById("countIn"),
-    out: document.getElementById("countOut")
-};
-
 // Replay list (one card per line call that carries a clip url)
 const replaysListElement =
     document.getElementById("replaysList");
 
 const replaysEmptyElement =
     document.getElementById("replaysEmpty");
-
-// Court diagram elements (ball landing spot, drawn from
-// event.court_location, which is real-world feet — not the pixel
-// x/y, which is relative to the tracking model's frame size and
-// can't be reliably mapped onto the displayed video).
-const courtPanelElement =
-    document.getElementById("courtPanel");
-
-const courtMarkerElement =
-    document.getElementById("courtMarker");
-
-const courtInfoResultElement =
-    document.getElementById("courtInfoResult");
-
-const courtInfoDetailElement =
-    document.getElementById("courtInfoDetail");
-
-const courtInfoCoordsElement =
-    document.getElementById("courtInfoCoords");
-
-// Standard court dimensions this diagram assumes, in feet.
-// x: 0-20 (width), y: 0-44 (length), matching court_location's
-// "measured from the top-left baseline corner" description.
-const COURT_WIDTH_FT = 20;
-const COURT_LENGTH_FT = 44;
-
-// SVG court is 10 units per foot. The SVG viewBox is
-// "-30 -30 260 500", which leaves 3 ft of margin around the court,
-// so a ball that landed slightly OUT is drawn just outside the
-// lines instead of being squashed onto them.
-const COURT_SVG_SCALE = 10;
-const COURT_MARGIN_FT = 2.5;
 
 console.log(
     "[LineCall] DOM elements found:",
@@ -1495,7 +1455,7 @@ console.log(
         lineCallResultElement: !!lineCallResultElement,
         lineCallDetailElement: !!lineCallDetailElement,
         replaysListElement: !!replaysListElement,
-        counters: Object.values(counterElements).every(Boolean)
+        replaysEmptyElement: !!replaysEmptyElement
     }
 );
 
@@ -1607,49 +1567,18 @@ function hideLineCall() {
     lineCallElement.classList.remove(
         "show"
     );
-
-    hideCourtDiagram();
 }
 
 // ============================================================
-// CALL COUNTERS + REPLAY LIST
+// REPLAY LIST
 //
-// Every new line call:
-//   - bumps one of the 4 counters
-//   - if the event has a clip url, adds a "Call #N" replay card
-//     under the video (newest at the end)
+// Every new line call, if the event has a clip url, adds a
+// "Call #N" replay card under the video (newest at the end).
 // ============================================================
 
 const MAX_REPLAYS = 40;
 
 let totalCalls = 0;
-
-const callCounts = {
-    uncertainIn: 0,
-    uncertainOut: 0,
-    in: 0,
-    out: 0
-};
-
-function bumpCounter(rawResult, isUncertain) {
-
-    let key = null;
-
-    if (rawResult === "in") {
-        key = isUncertain ? "uncertainIn" : "in";
-    } else if (rawResult === "out") {
-        key = isUncertain ? "uncertainOut" : "out";
-    }
-
-    if (!key) {
-        return;
-    }
-
-    callCounts[key]++;
-
-    counterElements[key].textContent =
-        String(callCounts[key]);
-}
 
 // fetch -> blob -> save to device. If that fails (usually CORS on
 // the S3 bucket), fall back to opening the clip in a new tab.
@@ -1836,152 +1765,6 @@ function addReplay(clipUrl, callNumber, result) {
     }
 }
 
-// ============================================================
-// COURT DIAGRAM (ball landing spot)
-// ============================================================
-
-function hideCourtDiagram() {
-
-    courtPanelElement.classList.remove(
-        "show"
-    );
-
-    courtMarkerElement.style.display =
-        "none";
-
-    courtMarkerElement.classList.remove(
-        "drop"
-    );
-}
-
-function showCourtDiagram(event, result, labelText) {
-
-    const courtLocation =
-        event.court_location;
-
-    if (
-        !courtLocation ||
-        typeof courtLocation.x !== "number" ||
-        typeof courtLocation.y !== "number" ||
-        !isFinite(courtLocation.x) ||
-        !isFinite(courtLocation.y)
-    ) {
-
-        console.warn(
-            "[Court] Event has no usable court_location, skipping diagram.",
-            event
-        );
-
-        hideCourtDiagram();
-
-        return;
-    }
-
-    console.log(
-        "[Court] Plotting ball landing spot:",
-        courtLocation
-    );
-
-    const rawX = courtLocation.x;
-    const rawY = courtLocation.y;
-
-    // The dot may sit up to COURT_MARGIN_FT outside the lines
-    // (so an OUT ball is visibly outside); anything farther is
-    // clamped to that margin so it never leaves the SVG.
-    const clampedX =
-        Math.max(
-            -COURT_MARGIN_FT,
-            Math.min(
-                COURT_WIDTH_FT + COURT_MARGIN_FT,
-                rawX
-            )
-        );
-
-    const clampedY =
-        Math.max(
-            -COURT_MARGIN_FT,
-            Math.min(
-                COURT_LENGTH_FT + COURT_MARGIN_FT,
-                rawY
-            )
-        );
-
-    const cx = clampedX * COURT_SVG_SCALE;
-    const cy = clampedY * COURT_SVG_SCALE;
-
-    courtMarkerElement.setAttribute(
-        "cx",
-        cx
-    );
-
-    courtMarkerElement.setAttribute(
-        "cy",
-        cy
-    );
-
-    courtMarkerElement.style.display =
-        "block";
-
-    // Restart the "drop" animation every time (even if the marker
-    // is already visible from a previous event).
-    courtMarkerElement.classList.remove(
-        "drop"
-    );
-
-    // Force reflow so the animation restarts reliably.
-    void courtMarkerElement.getBBox();
-
-    courtMarkerElement.classList.add(
-        "drop"
-    );
-
-    courtPanelElement.dataset.result =
-        result || "";
-
-    courtInfoResultElement.textContent =
-        labelText ||
-        (
-            result
-                ? result.toUpperCase()
-                : String(
-                    event.type || "EVENT"
-                ).toUpperCase()
-        );
-
-    const details = [];
-
-    if (event.nearest_line) {
-        details.push(event.nearest_line);
-    }
-
-    if (
-        typeof event.nearest_line_distance ===
-        "number"
-    ) {
-        details.push(
-            `${event.nearest_line_distance} ft from line`
-        );
-    }
-
-    courtInfoDetailElement.textContent =
-        details.join(" · ");
-
-    // Show the REAL coordinates from the API (not the clamped ones).
-    const outsideCourt =
-        rawX < 0 ||
-        rawX > COURT_WIDTH_FT ||
-        rawY < 0 ||
-        rawY > COURT_LENGTH_FT;
-
-    courtInfoCoordsElement.textContent =
-        `(${rawX.toFixed(1)} ft, ${rawY.toFixed(1)} ft) from top-left baseline corner` +
-        (outsideCourt ? " · outside court" : "");
-
-    courtPanelElement.classList.add(
-        "show"
-    );
-}
-
 function showLineCall(event) {
 
     console.log(
@@ -2065,13 +1848,9 @@ function showLineCall(event) {
         "show"
     );
 
-    // Count this call, and add its replay card if it has a clip.
+    // Count this call (used only for the replay card's "Call #N"
+    // label), and add its replay card if it has a clip.
     totalCalls++;
-
-    bumpCounter(
-        rawResult,
-        isUncertain
-    );
 
     const clipUrl =
         getSafeClipUrl(event.url);
@@ -2084,9 +1863,6 @@ function showLineCall(event) {
             result
         );
     }
-
-    // Plot the ball's landing spot on the court diagram below.
-    showCourtDiagram(event, result, labelText);
 
     clearTimeout(
         lineCallHideTimer
@@ -2422,14 +2198,14 @@ function stopLineCallPolling() {
         activeLineCallController = null;
     }
 
-    // NOTE: we deliberately do NOT clear/hide the line call badge,
-    // or court diagram here (replay cards are never removed). If one is
-    // currently showing, it stays on screen (and still auto-hides on
-    // its own normal timer from showLineCall) even though the
-    // host/stream disconnected — so the viewer doesn't lose the last
-    // call/clip the moment the connection drops.
+    // NOTE: we deliberately do NOT clear/hide the line call badge
+    // here (replay cards are never removed). If the badge is
+    // currently showing, it stays on screen (and still auto-hides
+    // on its own normal timer from showLineCall) even though the
+    // host/stream disconnected — so the viewer doesn't lose the
+    // last call the moment the connection drops.
     console.log(
-        "[LineCall] Leaving any currently visible line call/clip/court diagram as-is."
+        "[LineCall] Leaving any currently visible line call as-is."
     );
 }
 

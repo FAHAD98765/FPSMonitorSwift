@@ -252,159 +252,6 @@
         }
 
         /* =========================
-           COURT DIAGRAM
-           (small overlay, bottom-left of the video, so
-            showing it never moves the page layout)
-        ========================= */
-
-        @keyframes dropIn {
-            0% {
-                transform: translateY(-40px) scale(0.6);
-                opacity: 0;
-            }
-            60% {
-                transform: translateY(4px) scale(1.15);
-                opacity: 1;
-            }
-            80% {
-                transform: translateY(-2px) scale(0.95);
-            }
-            100% {
-                transform: translateY(0) scale(1);
-            }
-        }
-
-        .court-panel {
-            --call-color: #ef4444;
-
-            position: absolute;
-            left: 14px;
-            bottom: 14px;
-            z-index: 4;
-
-            display: flex;
-            align-items: center;
-            gap: 12px;
-
-            padding: 10px 14px 10px 10px;
-
-            background: rgba(14, 17, 21, 0.85);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 12px;
-
-            opacity: 0;
-            pointer-events: none;
-            transition: opacity 0.15s ease;
-        }
-
-        .court-panel.show {
-            opacity: 1;
-        }
-
-        .court-diagram-wrap {
-            flex-shrink: 0;
-            width: 64px;
-        }
-
-        .court-diagram-wrap svg {
-            display: block;
-            width: 100%;
-            height: auto;
-        }
-
-        .court-outline {
-            fill: #0b0d10;
-            stroke: #4b5563;
-            stroke-width: 2;
-        }
-
-        .court-net {
-            stroke: #6b7280;
-            stroke-width: 3;
-            stroke-dasharray: 6 5;
-        }
-
-        .court-nvz-line,
-        .court-center-line {
-            stroke: #374151;
-            stroke-width: 1.5;
-        }
-
-        #courtMarker {
-            fill: var(--call-color, #ef4444);
-            stroke: #ffffff;
-            stroke-width: 2;
-            transform-origin: center;
-            transform-box: fill-box;
-        }
-
-        #courtMarker.drop {
-            animation: dropIn 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
-        }
-
-        .court-info {
-            display: flex;
-            flex-direction: column;
-            gap: 3px;
-            min-width: 0;
-        }
-
-        .court-info-result {
-            font-size: 14px;
-            font-weight: 800;
-            letter-spacing: 1px;
-            color: var(--call-color, #ffffff);
-        }
-
-        .court-info-detail {
-            font-size: 11px;
-            color: #c3c9d2;
-        }
-
-        .court-info-coords {
-            font-size: 10px;
-            color: #8b929d;
-            max-width: 170px;
-        }
-
-        /* =========================
-           COUNTERS (4 cards under the video)
-        ========================= */
-
-        .counters {
-            margin-top: 12px;
-
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 8px;
-        }
-
-        .counter {
-            background: #0d1014;
-            border: 1px solid #1c2027;
-            border-radius: 10px;
-            padding: 10px 8px;
-            text-align: center;
-        }
-
-        .counter-label {
-            font-size: 10px;
-            font-weight: 600;
-            letter-spacing: 0.3px;
-            text-transform: uppercase;
-            color: #8b929d;
-        }
-
-        .counter-value {
-            margin-top: 4px;
-            font-size: 20px;
-            font-weight: 800;
-            color: var(--red);
-        }
-
-        /* =========================
            LINE CALL REPLAYS
         ========================= */
 
@@ -585,11 +432,6 @@
             .line-call-result {
                 font-size: 44px;
             }
-
-            .court-panel {
-                left: 10px;
-                bottom: 10px;
-            }
         }
 
         /* =========================
@@ -597,10 +439,6 @@
         ========================= */
 
         @media (max-width: 600px) {
-
-            .counters {
-                grid-template-columns: repeat(2, 1fr);
-            }
 
             .replays-list {
                 grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
@@ -648,27 +486,6 @@
             .line-call-detail {
                 font-size: 12px;
                 text-align: center;
-            }
-
-            .court-panel {
-                padding: 6px 10px 6px 6px;
-                gap: 8px;
-            }
-
-            .court-diagram-wrap {
-                width: 46px;
-            }
-
-            .court-info-result {
-                font-size: 12px;
-            }
-
-            .court-info-detail {
-                font-size: 10px;
-            }
-
-            .court-info-coords {
-                display: none;
             }
         }
     </style>
@@ -719,90 +536,6 @@
                     <div class="line-call-detail" id="lineCallDetail"></div>
                 </div>
 
-            </div>
-
-            <!-- BALL LANDING SPOT (court diagram, bottom-left of video) -->
-            <div class="court-panel" id="courtPanel">
-
-                <div class="court-diagram-wrap">
-                    <svg viewBox="-30 -30 260 500" xmlns="http://www.w3.org/2000/svg">
-
-                        <!-- Court outline: 20ft wide x 44ft long, 10 units per ft -->
-                        <rect
-                            class="court-outline"
-                            x="1" y="1" width="198" height="438"
-                        ></rect>
-
-                        <!-- Net (middle of the court) -->
-                        <line
-                            class="court-net"
-                            x1="0" y1="220" x2="200" y2="220"
-                        ></line>
-
-                        <!-- NVZ / kitchen lines, 7ft from net each side -->
-                        <line
-                            class="court-nvz-line"
-                            x1="0" y1="150" x2="200" y2="150"
-                        ></line>
-                        <line
-                            class="court-nvz-line"
-                            x1="0" y1="290" x2="200" y2="290"
-                        ></line>
-
-                        <!-- Center service lines (net to kitchen, both halves) -->
-                        <line
-                            class="court-center-line"
-                            x1="100" y1="0" x2="100" y2="150"
-                        ></line>
-                        <line
-                            class="court-center-line"
-                            x1="100" y1="290" x2="100" y2="440"
-                        ></line>
-
-                        <!-- Ball landing marker -->
-                        <circle
-                            id="courtMarker"
-                            cx="100"
-                            cy="220"
-                            r="7"
-                            style="display: none;"
-                        ></circle>
-
-                    </svg>
-                </div>
-
-                <div class="court-info">
-                    <div class="court-info-result" id="courtInfoResult">--</div>
-                    <div class="court-info-detail" id="courtInfoDetail"></div>
-                    <div class="court-info-coords" id="courtInfoCoords"></div>
-                </div>
-
-            </div>
-
-        </section>
-
-
-        <!-- COUNTERS -->
-        <section class="counters">
-
-            <div class="counter">
-                <div class="counter-label">Uncertain line call in</div>
-                <div class="counter-value" id="countUncertainIn">0</div>
-            </div>
-
-            <div class="counter">
-                <div class="counter-label">Uncertain line call out</div>
-                <div class="counter-value" id="countUncertainOut">0</div>
-            </div>
-
-            <div class="counter">
-                <div class="counter-label">Line call in</div>
-                <div class="counter-value" id="countIn">0</div>
-            </div>
-
-            <div class="counter">
-                <div class="counter-label">Line call out</div>
-                <div class="counter-value" id="countOut">0</div>
             </div>
 
         </section>
