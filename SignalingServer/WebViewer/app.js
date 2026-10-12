@@ -5,6 +5,16 @@ const sessionId =
     viewerParams.get("sessionId") ||
     "fpsmonitor-session";
 
+console.log(
+    "[Init] Page loaded. URL params:",
+    Object.fromEntries(viewerParams.entries())
+);
+
+console.log(
+    "[Init] Resolved sessionId:",
+    sessionId
+);
+
 const statusElement = document.getElementById("status");
 const videoElement = document.getElementById("remoteVideo");
 const fpsElement = document.getElementById("fps");
@@ -180,12 +190,23 @@ let uiConnectionState = "connecting";
 
 function updateConnectionUI(state) {
 
+    console.log(
+        "[UI] Connection state change:",
+        uiConnectionState,
+        "->",
+        state
+    );
+
     uiConnectionState = state;
 
     if (
         typeof window.setConnectionState === "function"
     ) {
         window.setConnectionState(state);
+    } else {
+        console.warn(
+            "[UI] window.setConnectionState is not defined (index.html script missing?)"
+        );
     }
 
     if (state !== "connected") {
@@ -272,6 +293,11 @@ function connectSignaling() {
             })
         );
 
+        console.log(
+            "[WS] Sent register message for sessionId:",
+            sessionId
+        );
+
         setStatus(
             "Connected to signaling server. Waiting for host..."
         );
@@ -303,6 +329,10 @@ function connectSignaling() {
 
                 case "producer-available":
 
+                    console.log(
+                        "[WS] Host/producer is available."
+                    );
+
                     updateConnectionUI(
                         "connecting"
                     );
@@ -314,6 +344,10 @@ function connectSignaling() {
                     break;
 
                 case "offer":
+
+                    console.log(
+                        "[WS] Received offer from host, handling..."
+                    );
 
                     await handleOffer(
                         message
@@ -331,6 +365,10 @@ function connectSignaling() {
 
                 case "producer-left":
 
+                    console.log(
+                        "[WS] Host/producer left the session."
+                    );
+
                     stopPeerConnection();
 
                     updateConnectionUI(
@@ -344,6 +382,11 @@ function connectSignaling() {
                     break;
 
                 case "error":
+
+                    console.error(
+                        "[WS] Server sent an error message:",
+                        message.message
+                    );
 
                     setStatus(
                         `Server error: ${message.message}`
@@ -1198,6 +1241,11 @@ const LINECALL_API_BASE =
 const LINECALL_SHOW_MS =
     1000;
 
+// When the event carries a clip (event.url), keep the badge + clip
+// on screen longer so there's actually time to watch the replay.
+const LINECALL_SHOW_MS_WITH_CLIP =
+    4000;
+
 const LINECALL_MIN_GAP_MS =
     0;
 
@@ -1207,7 +1255,7 @@ const LINECALL_ERROR_RETRY_MS =
 // Bumped up from 2000ms: the tracking pipeline can take a bit to
 // finish processing a frame before the "latest" event is ready, and
 // a request that legitimately takes >2s was being treated as a fatal
-// timeout (see the AbortError fix below), which made the whole
+// timeout (see the AbortError handling below), which made the whole
 // polling loop die. Increasing this reduces how often we even hit
 // that edge case in the first place.
 const LINECALL_REQUEST_TIMEOUT_MS =
@@ -1221,6 +1269,28 @@ const lineCallResultElement =
 
 const lineCallDetailElement =
     document.getElementById("lineCallDetail");
+
+// Clip replay elements (the event's "url" field, e.g. an S3 .mov clip)
+const lineCallClipElement =
+    document.getElementById("lineCallClip");
+
+const lineCallClipVideoElement =
+    document.getElementById("lineCallClipVideo");
+
+const lineCallClipFallbackElement =
+    document.getElementById("lineCallClipFallback");
+
+console.log(
+    "[LineCall] DOM elements found:",
+    {
+        lineCallElement: !!lineCallElement,
+        lineCallResultElement: !!lineCallResultElement,
+        lineCallDetailElement: !!lineCallDetailElement,
+        lineCallClipElement: !!lineCallClipElement,
+        lineCallClipVideoElement: !!lineCallClipVideoElement,
+        lineCallClipFallbackElement: !!lineCallClipFallbackElement
+    }
+);
 
 // ============================================================
 // LINE CALL STATE
@@ -1240,6 +1310,9 @@ let lineCallLoopRunning = false;
 // Current API request controller.
 // Used to immediately cancel request on disconnect.
 let activeLineCallController = null;
+
+// Counts every /latest API hit, purely for debugging in the console.
+let lineCallPollCount = 0;
 
 // ============================================================
 // SLEEP
@@ -1261,12 +1334,121 @@ function sleep(ms) {
 
 function hideLineCall() {
 
+    console.log(
+        "[LineCall] Hiding badge (timer expired or disconnect)."
+    );
+
     lineCallElement.classList.remove(
+        "show"
+    );
+
+    hideLineCallClip();
+}
+
+// ============================================================
+// CLIP REPLAY
+//
+// event.url -> S3 link to the raw clip for this event (currently
+// .mov). Browser support for .mov is inconsistent (Safari plays it,
+// Chrome/Firefox often can't depending on codec), so this tries to
+// play it inline and falls back to a simple "Open clip" link that
+// opens the file in a new tab if inline playback fails.
+// ============================================================
+
+function hideLineCallClip() {
+
+    lineCallClipElement.classList.remove(
+        "show"
+    );
+
+    // Stop any playback/download in progress.
+    lineCallClipVideoElement.pause();
+    lineCallClipVideoElement.removeAttribute("src");
+    lineCallClipVideoElement.load();
+    lineCallClipVideoElement.style.display = "block";
+
+    lineCallClipFallbackElement.style.display = "none";
+    lineCallClipFallbackElement.href = "#";
+}
+
+function showLineCallClip(clipUrl) {
+
+    if (!clipUrl) {
+
+        console.log(
+            "[LineCall] Event has no clip url, nothing to show."
+        );
+
+        hideLineCallClip();
+
+        return;
+    }
+
+    console.log(
+        "[LineCall] 🎬 Loading clip:",
+        clipUrl
+    );
+
+    lineCallClipFallbackElement.href = clipUrl;
+
+    lineCallClipVideoElement.style.display = "block";
+    lineCallClipFallbackElement.style.display = "none";
+
+    lineCallClipVideoElement.src = clipUrl;
+
+    lineCallClipVideoElement
+        .play()
+        .then(() => {
+
+            console.log(
+                "[LineCall] 🎬 Clip playing inline:",
+                clipUrl
+            );
+        })
+        .catch((error) => {
+
+            // Inline playback failed (unsupported container/codec,
+            // autoplay blocked, etc). Fall back to a plain link so
+            // the clip is still reachable.
+            console.warn(
+                "[LineCall] 🎬 Clip inline playback failed, showing link instead:",
+                error
+            );
+
+            lineCallClipVideoElement.style.display = "none";
+            lineCallClipFallbackElement.style.display = "block";
+        });
+
+    lineCallClipElement.classList.add(
         "show"
     );
 }
 
+// If the <video> element itself reports an error (e.g. browser can't
+// decode this .mov at all), fall back to the link too.
+lineCallClipVideoElement.addEventListener(
+    "error",
+    () => {
+
+        if (!lineCallClipVideoElement.getAttribute("src")) {
+            return;
+        }
+
+        console.warn(
+            "[LineCall] 🎬 Clip <video> element errored (unsupported format?), showing link instead."
+        );
+
+        lineCallClipVideoElement.style.display = "none";
+        lineCallClipFallbackElement.style.display = "block";
+    }
+);
+
 function showLineCall(event) {
+
+    console.log(
+        "[LineCall] 📣 Displaying event on screen:",
+        event
+    );
 
     const result =
         String(
@@ -1315,14 +1497,30 @@ function showLineCall(event) {
         "show"
     );
 
+    // Show the replay clip too, if this event has one.
+    showLineCallClip(event.url);
+
     clearTimeout(
         lineCallHideTimer
+    );
+
+    // If a clip came with this event, keep the badge (and clip) up
+    // long enough to actually watch it rather than hiding after 1s.
+    const visibleMs =
+        event.url
+            ? LINECALL_SHOW_MS_WITH_CLIP
+            : LINECALL_SHOW_MS;
+
+    console.log(
+        "[LineCall] Badge will auto-hide after",
+        visibleMs,
+        "ms"
     );
 
     lineCallHideTimer =
         setTimeout(
             hideLineCall,
-            LINECALL_SHOW_MS
+            visibleMs
         );
 }
 
@@ -1334,8 +1532,13 @@ async function pollLineCallOnce() {
 
     // Do not make API request if user is not connected.
     if (!lineCallLoopRunning) {
+        console.log(
+            "[LineCall] Skipping poll, loop is not running."
+        );
         return;
     }
+
+    lineCallPollCount++;
 
     const controller =
         new AbortController();
@@ -1356,7 +1559,7 @@ async function pollLineCallOnce() {
             `${encodeURIComponent(sessionId)}/latest`;
 
         console.log(
-            "[LineCall] API HIT:",
+            `[LineCall] API HIT #${lineCallPollCount}:`,
             url
         );
 
@@ -1369,15 +1572,27 @@ async function pollLineCallOnce() {
                 }
             );
 
+        console.log(
+            `[LineCall] API response status #${lineCallPollCount}:`,
+            response.status
+        );
+
         // If connection was lost while
         // request was running, don't process it.
         if (!lineCallLoopRunning) {
+            console.log(
+                "[LineCall] Loop stopped while request was in flight, discarding response."
+            );
             return;
         }
 
         if (
             response.status === 404
         ) {
+
+            console.log(
+                "[LineCall] 404 - no event available yet for this session."
+            );
 
             // No event available.
             lineCallFirstPoll = false;
@@ -1398,8 +1613,22 @@ async function pollLineCallOnce() {
         // Connection may have disappeared
         // while JSON was being processed.
         if (!lineCallLoopRunning) {
+            console.log(
+                "[LineCall] Loop stopped while parsing JSON, discarding response."
+            );
             return;
         }
+
+        // ----------------------------------------------------
+        // DEBUG:
+        // Log the raw payload every time so we can see exactly
+        // what shape the API is sending (top-level event_id?
+        // wrapped in "event"/"data"? different field name?).
+        // ----------------------------------------------------
+        console.log(
+            "[LineCall] Raw response:",
+            data
+        );
 
         const event =
             data && data.event_id
@@ -1417,10 +1646,31 @@ async function pollLineCallOnce() {
             !event.event_id
         ) {
 
+            console.warn(
+                "[LineCall] No usable event_id found in response. " +
+                "Check the raw response logged above — the shape " +
+                "may not match what the code expects.",
+                data
+            );
+
             lineCallFirstPoll = false;
 
             return;
         }
+
+        // Log every event_id we compare against, even when it's the
+        // same as before, so "no new event yet" is visibly different
+        // from "we never detect changes".
+        console.log(
+            "[LineCall] event_id from API:",
+            event.event_id,
+            "| last seen:",
+            lastLineCallEventId,
+            "| firstPoll:",
+            lineCallFirstPoll,
+            "| has clip url:",
+            !!event.url
+        );
 
         // ----------------------------------------------------
         // First API hit after connection:
@@ -1436,7 +1686,7 @@ async function pollLineCallOnce() {
                 event.event_id;
 
             console.log(
-                "[LineCall] Initial event remembered:",
+                "[LineCall] Initial event remembered (not shown):",
                 event.event_id
             );
 
@@ -1456,12 +1706,19 @@ async function pollLineCallOnce() {
                 event.event_id;
 
             console.log(
-                "[LineCall] 🟢 NEW EVENT:",
+                "[LineCall] 🟢 NEW EVENT DETECTED:",
                 event
             );
 
             showLineCall(
                 event
+            );
+
+        } else {
+
+            console.log(
+                "[LineCall] Same event as last poll, nothing new. event_id:",
+                event.event_id
             );
         }
 
@@ -1510,7 +1767,21 @@ function startLineCallPolling() {
         sessionId
     );
 
+    console.log(
+        "[LineCall] Config:",
+        {
+            LINECALL_API_BASE,
+            LINECALL_SHOW_MS,
+            LINECALL_SHOW_MS_WITH_CLIP,
+            LINECALL_MIN_GAP_MS,
+            LINECALL_ERROR_RETRY_MS,
+            LINECALL_REQUEST_TIMEOUT_MS
+        }
+    );
+
     lineCallLoopRunning = true;
+
+    lineCallPollCount = 0;
 
     // On every new connection, the current
     // latest event is treated as old.
@@ -1534,6 +1805,10 @@ function stopLineCallPolling() {
         // make sure any active request is cancelled.
         if (activeLineCallController) {
 
+            console.log(
+                "[LineCall] Loop already stopped, but aborting a stray in-flight request."
+            );
+
             activeLineCallController.abort();
 
             activeLineCallController = null;
@@ -1543,7 +1818,10 @@ function stopLineCallPolling() {
     }
 
     console.log(
-        "[LineCall] 🔴 User disconnected -> STOP API polling"
+        "[LineCall] 🔴 User disconnected -> STOP API polling",
+        "(total polls made:",
+        lineCallPollCount,
+        ")"
     );
 
     lineCallLoopRunning = false;
@@ -1573,6 +1851,10 @@ function stopLineCallPolling() {
 // ============================================================
 
 async function lineCallLoop() {
+
+    console.log(
+        "[LineCall] Polling loop starting."
+    );
 
     while (
         lineCallLoopRunning
@@ -1614,12 +1896,6 @@ async function lineCallLoop() {
             //      the loop dies silently and never restarts (because
             //      startLineCallPolling() sees lineCallLoopRunning
             //      still true and refuses to start a new loop).
-            //
-            // BUG THAT WAS HERE: every AbortError broke the loop, so
-            // a single slow/timed-out request permanently killed live
-            // polling until the viewer fully disconnected and
-            // reconnected — which is exactly the "line call only
-            // shows up after disconnect" symptom.
             if (
                 error &&
                 error.name === "AbortError"
@@ -1635,7 +1911,9 @@ async function lineCallLoop() {
                 }
 
                 console.warn(
-                    "[LineCall] Request timed out, retrying..."
+                    "[LineCall] Request timed out (>",
+                    LINECALL_REQUEST_TIMEOUT_MS,
+                    "ms), retrying..."
                 );
 
                 await sleep(
@@ -1663,7 +1941,8 @@ async function lineCallLoop() {
     }
 
     console.log(
-        "[LineCall] Polling loop stopped."
+        "[LineCall] Polling loop stopped. Total polls made:",
+        lineCallPollCount
     );
 }
 

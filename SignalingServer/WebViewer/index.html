@@ -277,6 +277,57 @@
         }
 
         /* =========================
+           LINE CALL CLIP (replay)
+        ========================= */
+
+        .line-call-clip {
+            margin-top: 6px;
+            width: 160px;
+
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            background: #000;
+
+            opacity: 0;
+            transform: translateY(-4px);
+            pointer-events: none;
+            transition: opacity 0.12s ease, transform 0.12s ease;
+        }
+
+        .line-call-clip.show {
+            opacity: 1;
+            transform: translateY(0);
+            pointer-events: auto;
+        }
+
+        .line-call-clip video {
+            display: block;
+            width: 100%;
+            height: auto;
+        }
+
+        .line-call-clip-fallback {
+            display: block;
+            padding: 6px 8px;
+            font-size: 10px;
+            font-weight: 700;
+            color: #9ad6ff;
+            text-align: center;
+            text-decoration: none;
+        }
+
+        .line-call-clip-fallback:hover {
+            text-decoration: underline;
+        }
+
+        @media (max-width: 480px) {
+            .line-call-clip {
+                width: 120px;
+            }
+        }
+
+        /* =========================
            INFO
         ========================= */
 
@@ -522,6 +573,25 @@
                         <div class="line-call-title">LINE CALL</div>
                         <div class="line-call-result" id="lineCallResult">--</div>
                         <div class="line-call-detail" id="lineCallDetail"></div>
+                    </div>
+
+                    <!-- CLIP REPLAY (shows under the line-call badge when
+                         the event carries a "url" pointing to the clip) -->
+                    <div class="line-call-clip" id="lineCallClip">
+                        <video
+                            id="lineCallClipVideo"
+                            muted
+                            playsinline
+                            autoplay
+                        ></video>
+                        <a
+                            class="line-call-clip-fallback"
+                            id="lineCallClipFallback"
+                            href="#"
+                            target="_blank"
+                            rel="noopener"
+                            style="display: none;"
+                        >Open clip</a>
                     </div>
 
                 </div>
