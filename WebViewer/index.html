@@ -5,148 +5,20 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CALLITNOW</title>
-
-    <style>
-        * {
-            box-sizing: border-box;
-        }
-
-        body {
-            margin: 0;
-            padding: 24px;
-            background: #101114;
-            color: #f5f5f5;
-            font-family: Arial, sans-serif;
-        }
-
-        .container {
-            max-width: 900px;
-            margin: 0 auto;
-        }
-
-        h1 {
-            letter-spacing: 2px;
-        }
-
-        video {
-            display: block;
-            width: 100%;
-            max-height: 65vh;
-            background: #000;
-            border-radius: 12px;
-        }
-
-        .panel {
-            margin-top: 20px;
-            padding: 18px;
-            background: #1b1c21;
-            border: 1px solid #34353b;
-            border-radius: 12px;
-        }
-
-        .option {
-            display: flex;
-            align-items: flex-start;
-            gap: 12px;
-            padding: 14px;
-            margin-top: 10px;
-            border: 1px solid #404148;
-            border-radius: 10px;
-            cursor: pointer;
-        }
-
-        .option:has(input:checked) {
-            border-color: #c8ff00;
-        }
-
-        .option input {
-            margin-top: 4px;
-            accent-color: #c8ff00;
-        }
-
-        .option strong {
-            display: block;
-            margin-bottom: 5px;
-        }
-
-        .description {
-            color: #b5b5bd;
-            font-size: 14px;
-            line-height: 1.5;
-        }
-
-        #status {
-            color: #c8ff00;
-            font-weight: bold;
-        }
-
-        #fps {
-            color: #b5b5bd;
-        }
-
-        .note {
-            color: #b5b5bd;
-            font-size: 13px;
-            line-height: 1.5;
-        }
-    </style>
 </head>
-
 <body>
-    <main class="container">
-        <h1>CALLITNOW</h1>
+    <h1>CALLITNOW</h1>
 
-        <video
-            id="remoteVideo"
-            autoplay
-            playsinline
-            muted
-        ></video>
+    <video
+        id="remoteVideo"
+        autoplay
+        playsinline
+        muted
+        controls
+    ></video>
 
-        <p id="status">Connecting...</p>
-        <p id="fps">FPS: --</p>
-
-        <section class="panel">
-            <h2>Disconnect Settings</h2>
-
-            <label class="option">
-                <input
-                    type="radio"
-                    name="disconnectMode"
-                    value="auto"
-                >
-
-                <span>
-                    <strong>Option 1 — Auto Stop Host</strong>
-                    <span class="description">
-                        When this viewer disconnects, request the host
-                        to stop its live stream automatically.
-                    </span>
-                </span>
-            </label>
-
-            <label class="option">
-                <input
-                    type="radio"
-                    name="disconnectMode"
-                    value="manual"
-                    checked
-                >
-
-                <span>
-                    <strong>Option 2 — Manual Stop</strong>
-                    <span class="description">
-                        When this viewer disconnects, the host keeps
-                        streaming. Stop it manually from the host app.
-                    </span>
-                </span>
-            </label>
-
-            <p id="modeStatus" class="note">
-                Default: Manual Stop
-            </p>
-        </section>
-    </main>
+    <p id="status">Connecting...</p>
+    <p id="fps">FPS: --</p>
 
     <script src="app.js"></script>
 </body>

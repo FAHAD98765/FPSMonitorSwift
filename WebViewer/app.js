@@ -5,18 +5,11 @@ const sessionId = params.get("session");
 const statusElement = document.getElementById("status");
 const videoElement = document.getElementById("remoteVideo");
 const fpsElement = document.getElementById("fps");
-const modeStatusElement = document.getElementById("modeStatus");
-
-const modeInputs = document.querySelectorAll(
-    'input[name="disconnectMode"]'
-);
 
 let socket = null;
 let peerConnection = null;
 let producerId = null;
 
-let disconnectMode = "manual";
-let registered = false;
 let renderedFrames = 0;
 let lastFPSCheck = performance.now();
 let animationFrameId = null;
@@ -42,18 +35,19 @@ async function fetchTurnCredentials() {
             throw new Error(`TURN request failed: ${response.status}`);
         }
 
-        const servers = await response.json();
+        const turnServers = await response.json();
 
-        if (Array.isArray(servers) && servers.length > 0) {
+        if (Array.isArray(turnServers) && turnServers.length > 0) {
             rtcConfig.iceServers = [
                 { urls: "stun:stun.l.google.com:19302" },
-                ...servers
+                ...turnServers
             ];
 
-            console.log("[ICE] TURN credentials loaded");
+            console.log("[ICE] TURN servers loaded");
         }
     } catch (error) {
-        console.error("[ICE] TURN unavailable:", error);
+        console.error("[ICE] Failed to fetch TURN credentials:", error);
+        console.log("[ICE] Continuing with STUN only");
     }
 }
 
@@ -63,52 +57,11 @@ async function fetchTurnCredentials() {
 
 function setStatus(message) {
     console.log("[WebViewer]", message);
-    statusElement.textContent = message;
-}
 
-// ============================================================
-// DISCONNECT MODE
-// ============================================================
-
-function updateModeStatus(message) {
-    modeStatusElement.textContent = message;
-}
-
-function sendDisconnectMode() {
-    if (!registered || !socket ||
-        socket.readyState !== WebSocket.OPEN) {
-        updateModeStatus(
-            "Preference selected. Waiting for server connection..."
-        );
-        return;
+    if (statusElement) {
+        statusElement.textContent = message;
     }
-
-    socket.send(JSON.stringify({
-        type: "set-disconnect-mode",
-        sessionId,
-        mode: disconnectMode
-    }));
 }
-
-modeInputs.forEach((input) => {
-    input.addEventListener("change", () => {
-        if (!input.checked) return;
-
-        disconnectMode = input.value;
-
-        if (disconnectMode === "auto") {
-            updateModeStatus(
-                "Auto Stop selected. Host will receive a stop request when this viewer disconnects."
-            );
-        } else {
-            updateModeStatus(
-                "Manual Stop selected. Host streaming will continue when this viewer disconnects."
-            );
-        }
-
-        sendDisconnectMode();
-    });
-});
 
 // ============================================================
 // INITIALIZATION
@@ -116,21 +69,23 @@ modeInputs.forEach((input) => {
 
 async function initializeViewer() {
     if (!sessionId) {
-        setStatus("Missing session ID in URL");
+        setStatus("Missing session ID");
         return;
     }
 
     setStatus("Fetching TURN credentials...");
+
     await fetchTurnCredentials();
 
     setStatus(`Connecting to session: ${sessionId}`);
+
     connectSignaling();
 }
 
 initializeViewer();
 
 // ============================================================
-// SIGNALING
+// SIGNALING SERVER
 // ============================================================
 
 function connectSignaling() {
@@ -138,6 +93,8 @@ function connectSignaling() {
         window.location.protocol === "https:" ? "wss:" : "ws:";
 
     const wsURL = `${protocol}//${window.location.host}/ws`;
+
+    console.log("[WS] Connecting to:", wsURL);
 
     socket = new WebSocket(wsURL);
 
@@ -161,17 +118,7 @@ function connectSignaling() {
 
             switch (message.type) {
                 case "registered":
-                    registered = true;
                     setStatus("Connected. Waiting for producer...");
-                    sendDisconnectMode();
-                    break;
-
-                case "disconnect-mode-updated":
-                    updateModeStatus(
-                        message.mode === "auto"
-                            ? "Auto Stop saved on server."
-                            : "Manual Stop saved on server."
-                    );
                     break;
 
                 case "producer-available":
@@ -187,7 +134,10 @@ function connectSignaling() {
                     break;
 
                 case "producer-left":
+                    console.log("[WS] Producer disconnected");
+
                     stopPeerConnection();
+
                     setStatus("Host disconnected");
                     break;
 
@@ -197,13 +147,15 @@ function connectSignaling() {
                     break;
 
                 case "pong":
+                    console.log("[WS] Pong received");
                     break;
 
                 default:
                     console.log("[WS] Unknown message:", message);
+                    break;
             }
         } catch (error) {
-            console.error("[WS] Message error:", error);
+            console.error("[WS] Message parsing error:", error);
         }
     };
 
@@ -212,15 +164,19 @@ function connectSignaling() {
         setStatus("WebSocket connection error");
     };
 
-    socket.onclose = () => {
-        registered = false;
+    socket.onclose = (event) => {
+        console.log("[WS] Disconnected", {
+            code: event.code,
+            reason: event.reason
+        });
+
         stopPeerConnection();
         setStatus("Signaling server disconnected");
     };
 }
 
 // ============================================================
-// PEER CONNECTION
+// CREATE PEER CONNECTION
 // ============================================================
 
 async function createPeerConnection() {
@@ -229,6 +185,8 @@ async function createPeerConnection() {
     peerConnection = new RTCPeerConnection(rtcConfig);
 
     peerConnection.ontrack = (event) => {
+        console.log("[WebRTC] Remote track received");
+
         if (event.streams && event.streams.length > 0) {
             videoElement.srcObject = event.streams[0];
         } else {
@@ -236,9 +194,12 @@ async function createPeerConnection() {
         }
 
         videoElement.play()
-            .then(() => setStatus("LIVE"))
+            .then(() => {
+                console.log("[Video] Playback started");
+                setStatus("LIVE");
+            })
             .catch((error) => {
-                console.warn("[Video] Playback needs user interaction", error);
+                console.warn("[Video] Autoplay prevented:", error);
                 setStatus("Tap the video to start playback");
             });
     };
@@ -265,7 +226,11 @@ async function createPeerConnection() {
     peerConnection.onconnectionstatechange = () => {
         if (!peerConnection) return;
 
-        switch (peerConnection.connectionState) {
+        const state = peerConnection.connectionState;
+
+        console.log("[WebRTC] Connection state:", state);
+
+        switch (state) {
             case "connected":
                 setStatus("LIVE");
                 break;
@@ -289,22 +254,24 @@ async function createPeerConnection() {
     };
 
     peerConnection.oniceconnectionstatechange = () => {
-        if (peerConnection) {
-            console.log(
-                "[ICE] State:",
-                peerConnection.iceConnectionState
-            );
-        }
+        if (!peerConnection) return;
+
+        console.log(
+            "[WebRTC] ICE state:",
+            peerConnection.iceConnectionState
+        );
     };
 }
 
 // ============================================================
-// OFFER / ANSWER
+// HANDLE OFFER
 // ============================================================
 
 async function handleOffer(message) {
     try {
         producerId = message.fromId;
+
+        console.log("[WebRTC] Offer from producer:", producerId);
 
         await createPeerConnection();
 
@@ -331,15 +298,17 @@ async function handleOffer(message) {
             sdp: answer.sdp
         }));
 
+        console.log("[WebRTC] Answer sent");
+
         setStatus("Answer sent. Connecting video...");
     } catch (error) {
-        console.error("[WebRTC] Offer failed:", error);
+        console.error("[WebRTC] Offer handling failed:", error);
         setStatus("Failed to establish WebRTC connection");
     }
 }
 
 // ============================================================
-// REMOTE ICE
+// HANDLE REMOTE ICE CANDIDATE
 // ============================================================
 
 async function handleRemoteCandidate(message) {
@@ -356,13 +325,15 @@ async function handleRemoteCandidate(message) {
                 sdpMLineIndex: message.sdpMLineIndex
             })
         );
+
+        console.log("[ICE] Remote candidate added");
     } catch (error) {
         console.error("[ICE] Failed to add candidate:", error);
     }
 }
 
 // ============================================================
-// STOP PEER CONNECTION
+// STOP WEBRTC
 // ============================================================
 
 function stopPeerConnection() {
@@ -376,8 +347,11 @@ function stopPeerConnection() {
         peerConnection = null;
     }
 
-    videoElement.pause();
-    videoElement.srcObject = null;
+    if (videoElement) {
+        videoElement.pause();
+        videoElement.srcObject = null;
+    }
+
     producerId = null;
 }
 
@@ -392,7 +366,9 @@ function updateFPS() {
     if (elapsed >= 1000) {
         const fps = renderedFrames * 1000 / elapsed;
 
-        fpsElement.textContent = `FPS: ${fps.toFixed(1)}`;
+        if (fpsElement) {
+            fpsElement.textContent = `FPS: ${fps.toFixed(1)}`;
+        }
 
         renderedFrames = 0;
         lastFPSCheck = now;
@@ -401,9 +377,13 @@ function updateFPS() {
     animationFrameId = requestAnimationFrame(updateFPS);
 }
 
+// ============================================================
+// VIDEO FRAME COUNTING
+// ============================================================
+
 if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) {
     function countVideoFrame() {
-        if (!videoElement.srcObject || videoElement.paused) {
+        if (!videoElement.srcObject) {
             videoFrameCallbackId = null;
             return;
         }
@@ -421,8 +401,12 @@ if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) {
         }
     });
 } else {
+    console.warn("requestVideoFrameCallback not supported");
+
     videoElement.addEventListener("timeupdate", () => {
-        if (!videoElement.paused) renderedFrames++;
+        if (!videoElement.paused) {
+            renderedFrames++;
+        }
     });
 }
 
