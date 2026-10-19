@@ -1,641 +1,93 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1.0, viewport-fit=cover"
-    >
-
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CALLITNOW</title>
 
     <style>
-        /* =========================
-           CONNECTION STATE COLORS
-           (body[data-state] switches these)
-        ========================= */
-
-        :root {
-            --state-color: #f59e0b;
-            --state-glow: rgba(245, 158, 11, 0.6);
-            --red: #ef4444;
-            --red-glow: rgba(239, 68, 68, 0.6);
-        }
-
-        body[data-state="connecting"] {
-            --state-color: #f59e0b;
-            --state-glow: rgba(245, 158, 11, 0.6);
-        }
-
-        body[data-state="connected"] {
-            --state-color: #22c55e;
-            --state-glow: rgba(34, 197, 94, 0.65);
-        }
-
-        body[data-state="disconnected"] {
-            --state-color: #8b929d;
-            --state-glow: rgba(139, 146, 157, 0.4);
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.35; }
-        }
-
         * {
             box-sizing: border-box;
+        }
+
+        body {
             margin: 0;
-            padding: 0;
+            padding: 24px;
+            background: #101114;
+            color: #f5f5f5;
+            font-family: Arial, sans-serif;
         }
 
-        html,
-        body {
-            width: 100%;
-            min-height: 100%;
-            font-family:
-                -apple-system,
-                BlinkMacSystemFont,
-                "Segoe UI",
-                Roboto,
-                Helvetica,
-                Arial,
-                sans-serif;
-            background: #08090b;
-            color: #ffffff;
-        }
-
-        body {
-            min-height: 100vh;
-            padding: 56px 24px 40px;
-        }
-
-        .app {
-            width: 100%;
-            max-width: 980px;
+        .container {
+            max-width: 900px;
             margin: 0 auto;
         }
 
-        /* =========================
-           HEADER
-        ========================= */
-
-        .header {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-bottom: 16px;
+        h1 {
+            letter-spacing: 2px;
         }
 
-        .logo {
-            width: 32px;
-            height: 32px;
-            border-radius: 9px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-
-            font-size: 13px;
-            font-weight: 800;
-            color: #ffffff;
-
-            background: linear-gradient(135deg, #fb923c, #ea580c);
-            box-shadow: 0 0 16px rgba(249, 115, 22, 0.45);
-        }
-
-        .header h1 {
-            font-size: 19px;
-            font-weight: 800;
-            letter-spacing: -0.3px;
-        }
-
-        /* =========================
-           VIDEO CARD
-        ========================= */
-
-        .video-card {
-            position: relative;
+        video {
             width: 100%;
-            background: #000;
-            border-radius: 16px;
-            overflow: hidden;
-            border: 1px solid #1c2027;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-        }
-
-        #remoteVideo {
+            max-height: 70vh;
             display: block;
+            background: #000;
+            border-radius: 12px;
+        }
+
+        #status {
+            color: #c8ff00;
+            font-weight: bold;
+        }
+
+        #fps {
+            color: #aaa;
+        }
+
+        #disconnectButton {
             width: 100%;
-            height: auto;
-            min-height: 300px;
-            max-height: 75vh;
-            object-fit: contain;
-            background: #000;
-        }
-
-        /* =========================
-           VIDEO OVERLAY
-        ========================= */
-
-        .video-overlay {
-            position: absolute;
-            inset: 0;
-            padding: 14px;
-            pointer-events: none;
-
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-        }
-
-        .status-badge,
-        .fps-badge {
-            background: rgba(20, 22, 26, 0.78);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 999px;
-
-            padding: 6px 12px;
-
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 0.2px;
-        }
-
-        .status-badge {
-            color: #ffffff;
-            text-transform: uppercase;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .status-badge::before {
-            content: "";
-            width: 7px;
-            height: 7px;
-            border-radius: 50%;
-            flex-shrink: 0;
-            background: var(--state-color);
-            box-shadow: 0 0 8px var(--state-glow);
-            transition: background 0.25s ease, box-shadow 0.25s ease;
-        }
-
-        body[data-state="connecting"] .status-badge::before {
-            animation: pulse 1.2s ease-in-out infinite;
-        }
-
-        .fps-badge {
-            color: #22c55e;
-            font-size: 11px;
-        }
-
-        /* =========================
-           LINE CALL
-           (big, red, centered on the video)
-        ========================= */
-
-        .line-call {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            z-index: 5;
-            max-width: calc(100% - 32px);
-
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 6px;
-
-            padding: 14px 28px;
-            border-radius: 16px;
-
-            background: rgba(0, 0, 0, 0.72);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            border: 2px solid var(--red);
-            box-shadow: 0 0 30px var(--red-glow);
-
-            opacity: 0;
-            pointer-events: none;
-            white-space: nowrap;
-            transition: opacity 0.08s ease;
-        }
-
-        .line-call.show {
-            opacity: 1;
-        }
-
-        .line-call-title {
-            display: none;
-        }
-
-        .line-call-result {
-            font-size: 56px;
-            font-weight: 900;
-            line-height: 1;
-            letter-spacing: 3px;
-            color: var(--red);
-            text-shadow: 0 0 18px var(--red-glow);
-        }
-
-        .line-call-detail {
-            font-size: 16px;
-            font-weight: 700;
-            color: #ffffff;
-        }
-
-        .line-call-detail:empty {
-            display: none;
-        }
-
-        /* =========================
-           LINE CALL REPLAYS
-        ========================= */
-
-        .replays-title {
-            margin-top: 22px;
-            margin-bottom: 10px;
-
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 0.4px;
-            text-transform: uppercase;
-            color: #8b929d;
-        }
-
-        .replays-empty {
-            font-size: 12px;
-            color: #5b626d;
-        }
-
-        .replays-list {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, 186px);
-            gap: 10px;
-        }
-
-        .replay-card {
-            background: #0d1014;
-            border: 1px solid #1c2027;
-            border-radius: 10px;
-            overflow: hidden;
-        }
-
-        .replay-card video {
-            display: block;
-            width: 100%;
-            height: 102px;
-            object-fit: contain;
-            background: #000;
-        }
-
-        .replay-fallback {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            height: 102px;
-
-            font-size: 12px;
-            font-weight: 700;
-            color: #9ad6ff;
-            text-decoration: none;
-            background: #000;
-        }
-
-        .replay-fallback:hover {
-            text-decoration: underline;
-        }
-
-        .replay-footer {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            position: relative;
-
-            padding: 7px 28px;
-            border-top: 1px solid #1c2027;
-        }
-
-        .replay-title {
-            font-size: 12px;
-            font-weight: 700;
-            color: var(--red);
-        }
-
-        .replay-download {
-            position: absolute;
-            right: 6px;
-            top: 50%;
-            transform: translateY(-50%);
-
-            width: 22px;
-            height: 22px;
-            border-radius: 6px;
-
-            font-size: 12px;
-            line-height: 1;
-            color: #9ad6ff;
-
-            background: none;
+            margin-top: 18px;
+            padding: 15px;
             border: none;
+            border-radius: 10px;
+            background: #ff4545;
+            color: white;
+            font-size: 16px;
+            font-weight: bold;
             cursor: pointer;
         }
 
-        .replay-download:hover {
-            background: rgba(255, 255, 255, 0.08);
+        #disconnectButton:hover {
+            background: #e52e2e;
         }
 
-        .replay-download.busy {
-            color: #6f7782;
-            cursor: default;
-            pointer-events: none;
-        }
-
-        /* =========================
-           CONNECTION INFO (small footer)
-        ========================= */
-
-        .info {
-            margin-top: 28px;
-
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            flex-wrap: wrap;
-            gap: 8px 12px;
-
-            padding-top: 12px;
-            border-top: 1px solid #14171c;
-        }
-
-        .connection {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-
-            font-size: 12px;
-            color: #8b929d;
-        }
-
-        .connection-dot {
-            width: 7px;
-            height: 7px;
-            border-radius: 50%;
-            background: var(--state-color);
-            box-shadow: 0 0 8px var(--state-glow);
-            transition: background 0.25s ease, box-shadow 0.25s ease;
-        }
-
-        body[data-state="connecting"] .connection-dot {
-            animation: pulse 1.2s ease-in-out infinite;
-        }
-
-        #connectionText {
-            color: var(--state-color);
-            font-weight: 600;
-            transition: color 0.25s ease;
-        }
-
-        .session {
-            font-size: 11px;
-            color: #5b626d;
-            word-break: break-all;
-        }
-
-        /* =========================
-           RESPONSIVE - TABLET
-        ========================= */
-
-        @media (max-width: 768px) {
-
-            body {
-                padding: 24px 14px 32px;
-            }
-
-            .video-card {
-                border-radius: 14px;
-            }
-
-            #remoteVideo {
-                min-height: 220px;
-                max-height: 70vh;
-            }
-
-            .video-overlay {
-                padding: 10px;
-            }
-
-            .line-call-result {
-                font-size: 44px;
-            }
-        }
-
-        /* =========================
-           RESPONSIVE - MOBILE
-        ========================= */
-
-        @media (max-width: 600px) {
-
-            .replays-list {
-                grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-            }
-        }
-
-        @media (max-width: 480px) {
-
-            body {
-                padding: 16px 10px 28px;
-            }
-
-            .header h1 {
-                font-size: 17px;
-            }
-
-            #remoteVideo {
-                min-height: 210px;
-                max-height: 68vh;
-            }
-
-            .video-overlay {
-                padding: 8px;
-            }
-
-            .status-badge,
-            .fps-badge {
-                font-size: 10px;
-                padding: 5px 9px;
-            }
-
-            .line-call {
-                max-width: calc(100% - 24px);
-                padding: 10px 14px;
-                gap: 4px;
-                white-space: normal;
-            }
-
-            .line-call-result {
-                font-size: clamp(22px, 8vw, 34px);
-                letter-spacing: 1px;
-                text-align: center;
-            }
-
-            .line-call-detail {
-                font-size: 12px;
-                text-align: center;
-            }
+        #disconnectButton:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
         }
     </style>
 </head>
 
-<body data-state="connecting">
+<body>
+    <main class="container">
+        <h1>CALLITNOW</h1>
 
-    <main class="app">
+        <video
+            id="remoteVideo"
+            autoplay
+            playsinline
+            muted
+        ></video>
 
-        <!-- HEADER -->
-        <header class="header">
-            <div class="logo">CN</div>
-            <h1>CALLITNOW</h1>
-        </header>
+        <p id="status">Connecting...</p>
+        <p id="fps">FPS: --</p>
 
-
-        <!-- VIDEO -->
-        <section class="video-card">
-
-            <video
-                id="remoteVideo"
-                autoplay
-                playsinline
-                muted
-            ></video>
-
-            <!-- VIDEO OVERLAY -->
-            <div class="video-overlay">
-
-                <div
-                    class="status-badge"
-                    id="status"
-                >
-                    Connecting...
-                </div>
-
-                <div
-                    class="fps-badge"
-                    id="fps"
-                >
-                    FPS: --
-                </div>
-
-                <!-- LINE CALL (centered on the video, big, red) -->
-                <div class="line-call" id="lineCall">
-                    <div class="line-call-title">LINE CALL</div>
-                    <div class="line-call-result" id="lineCallResult">--</div>
-                    <div class="line-call-detail" id="lineCallDetail"></div>
-                </div>
-
-            </div>
-
-        </section>
-
-
-        <!-- LINE CALL REPLAYS -->
-        <h2 class="replays-title">Line call replays</h2>
-
-        <p class="replays-empty" id="replaysEmpty">
-            No replays yet. Each line call clip will appear here.
-        </p>
-
-        <section class="replays-list" id="replaysList"></section>
-
-
-        <!-- CONNECTION INFO -->
-        <section class="info">
-
-            <div class="connection">
-
-                <span class="connection-dot"></span>
-
-                <span id="connectionText">Connecting...</span>
-
-            </div>
-
-            <div
-                class="session"
-                id="sessionDisplay"
-            >
-                Session: fpsmonitor-session
-            </div>
-
-        </section>
-
+        <button id="disconnectButton" type="button">
+            Disconnect
+        </button>
     </main>
 
-
-    <script>
-        /*
-         * Display current session ID.
-         * app.js continues to handle WebRTC/signaling.
-         */
-
-        const params =
-            new URLSearchParams(
-                window.location.search
-            );
-
-        const session =
-            params.get("session") ||
-            params.get("sessionId") ||
-            "fpsmonitor-session";
-
-        const sessionDisplay =
-            document.getElementById(
-                "sessionDisplay"
-            );
-
-        if (sessionDisplay) {
-            sessionDisplay.textContent =
-                `Session: ${session}`;
-        }
-    </script>
-
-
-    <script>
-        /*
-         * CONNECTION STATE (green = connected, grey = disconnected,
-         * amber = connecting).
-         *
-         * app.js calls:
-         *   window.setConnectionState("connected" | "disconnected" | "connecting")
-         *
-         * Yeh function sirf colors + neeche wala text badalta hai.
-         * Upar wale status badge ka text app.js khud set karta hai (setStatus).
-         */
-
-        (function () {
-
-            const LABELS = {
-                connecting: "Connecting...",
-                connected: "Connected",
-                disconnected: "Disconnected"
-            };
-
-            const textEl = document.getElementById("connectionText");
-
-            window.setConnectionState = function (state) {
-                if (!LABELS[state]) return;
-
-                document.body.dataset.state = state;
-
-                if (textEl) textEl.textContent = LABELS[state];
-            };
-
-        })();
-    </script>
-
     <script src="app.js"></script>
-
 </body>
 </html>

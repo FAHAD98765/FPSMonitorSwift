@@ -8,42 +8,94 @@ const os = require('os');
 const PORT = process.env.PORT || 8765;
 const WEB_ROOT = path.resolve(__dirname, 'WebViewer');
 
-// sessionId -> { producer: ws|null, viewers: Set<ws> }
 const sessions = new Map();
 
 function getSession(sessionId) {
-  if (!sessions.has(sessionId)) {
-    sessions.set(sessionId, {
-      producer: null,
-      viewers: new Set()
-    });
-  }
+    if (!sessions.has(sessionId)) {
+        sessions.set(sessionId, {
+            producer: null,
+            viewers: new Set(),
+            ending: false
+        });
+    }
 
-  return sessions.get(sessionId);
+    return sessions.get(sessionId);
 }
 
-function safeSend(ws, obj) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(obj));
-  }
+function safeSend(ws, message) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(message));
+    }
 }
 
 function getLocalIPs() {
-  const nets = os.networkInterfaces();
-  const results = [];
+    const interfaces = os.networkInterfaces();
+    const addresses = [];
 
-  for (const name of Object.keys(nets)) {
-    for (const net of nets[name] || []) {
-      if (net.family === 'IPv4' && !net.internal) {
-        results.push({
-          iface: name,
-          address: net.address
-        });
-      }
+    for (const name of Object.keys(interfaces)) {
+        for (const net of interfaces[name] || []) {
+            if (net.family === 'IPv4' && !net.internal) {
+                addresses.push(net.address);
+            }
+        }
     }
-  }
 
-  return results;
+    return addresses;
+}
+
+// ============================================================
+// END ENTIRE SESSION
+// ============================================================
+
+function endSession(sessionId, requestedBy) {
+    const session = sessions.get(sessionId);
+
+    if (!session || session.ending) {
+        return;
+    }
+
+    session.ending = true;
+
+    console.log(
+        `[SESSION] Ending "${sessionId}", requested by ${requestedBy}`
+    );
+
+    // Tell the host to stop camera capture and WebRTC.
+    if (session.producer) {
+        safeSend(session.producer, {
+            type: 'end-session',
+            sessionId,
+            reason: 'disconnect-button'
+        });
+    }
+
+    // Tell every viewer that the session has ended.
+    for (const viewer of session.viewers) {
+        safeSend(viewer, {
+            type: 'session-ended',
+            sessionId,
+            reason: 'disconnect-button'
+        });
+    }
+
+    // Close viewer sockets.
+    for (const viewer of session.viewers) {
+        if (viewer.readyState === WebSocket.OPEN) {
+            viewer.close(4002, 'Session ended');
+        }
+    }
+
+    // Close the host signaling socket after sending end-session.
+    // The host app MUST handle end-session and stop capture.
+    if (
+        session.producer &&
+        session.producer.readyState === WebSocket.OPEN
+    ) {
+        session.producer.close(4002, 'Session ended');
+    }
+
+    // Remove this session from the active session registry.
+    sessions.delete(sessionId);
 }
 
 // ============================================================
@@ -51,47 +103,49 @@ function getLocalIPs() {
 // ============================================================
 
 const httpServer = http.createServer((req, res) => {
-  let requestPath = (req.url || '/').split('?')[0];
+    let requestPath = (req.url || '/').split('?')[0];
 
-  if (requestPath === '/' || requestPath === '/view') {
-    requestPath = '/index.html';
-  }
-
-  const safePath = path.normalize(requestPath).replace(/^(\.\.[/\\])+/, '');
-  const filePath = path.join(WEB_ROOT, safePath);
-
-  if (!filePath.startsWith(WEB_ROOT + path.sep) && filePath !== WEB_ROOT) {
-    res.writeHead(403);
-    res.end('Forbidden');
-    return;
-  }
-
-  fs.readFile(filePath, (err, data) => {
-    if (err) {
-      res.writeHead(404, {
-        'Content-Type': 'text/plain; charset=utf-8'
-      });
-
-      res.end('Web Viewer file not found');
-      return;
+    if (requestPath === '/' || requestPath === '/view') {
+        requestPath = '/index.html';
     }
 
-    const ext = path.extname(filePath).toLowerCase();
+    const filePath = path.resolve(WEB_ROOT, '.' + requestPath);
 
-    const contentTypes = {
-      '.html': 'text/html; charset=utf-8',
-      '.js': 'application/javascript; charset=utf-8',
-      '.css': 'text/css; charset=utf-8',
-      '.json': 'application/json; charset=utf-8'
-    };
+    if (
+        filePath !== WEB_ROOT &&
+        !filePath.startsWith(WEB_ROOT + path.sep)
+    ) {
+        res.writeHead(403);
+        res.end('Forbidden');
+        return;
+    }
 
-    res.writeHead(200, {
-      'Content-Type': contentTypes[ext] || 'application/octet-stream',
-      'Cache-Control': 'no-cache'
+    fs.readFile(filePath, (error, data) => {
+        if (error) {
+            res.writeHead(404, {
+                'Content-Type': 'text/plain; charset=utf-8'
+            });
+            res.end('Web Viewer file not found');
+            return;
+        }
+
+        const ext = path.extname(filePath).toLowerCase();
+
+        const contentTypes = {
+            '.html': 'text/html; charset=utf-8',
+            '.js': 'application/javascript; charset=utf-8',
+            '.css': 'text/css; charset=utf-8',
+            '.json': 'application/json; charset=utf-8'
+        };
+
+        res.writeHead(200, {
+            'Content-Type':
+                contentTypes[ext] || 'application/octet-stream',
+            'Cache-Control': 'no-cache'
+        });
+
+        res.end(data);
     });
-
-    res.end(data);
-  });
 });
 
 // ============================================================
@@ -99,269 +153,234 @@ const httpServer = http.createServer((req, res) => {
 // ============================================================
 
 const wss = new WebSocket.Server({
-  server: httpServer
+    server: httpServer
 });
 
 wss.on('connection', (ws) => {
-  ws.id = Math.random().toString(36).slice(2, 10);
-  ws.role = null;
-  ws.sessionId = null;
+    ws.id = Math.random().toString(36).slice(2, 10);
+    ws.role = null;
+    ws.sessionId = null;
 
-  console.log(`[+] Client connected: ${ws.id}`);
+    console.log(`[+] Client connected: ${ws.id}`);
 
-  ws.on('message', (raw) => {
-    let msg;
+    ws.on('message', (raw) => {
+        let msg;
 
-    try {
-      msg = JSON.parse(raw.toString());
-    } catch (error) {
-      console.warn(`[!] Invalid JSON from ${ws.id}`);
-      return;
-    }
-
-    const { type, sessionId } = msg;
-
-    if (!sessionId && type !== 'ping') {
-      safeSend(ws, {
-        type: 'error',
-        message: 'sessionId is required'
-      });
-
-      return;
-    }
-
-    switch (type) {
-      // ------------------------------------------------------
-      // REGISTER
-      // ------------------------------------------------------
-
-      case 'register': {
-        if (!['producer', 'viewer'].includes(msg.role)) {
-          safeSend(ws, {
-            type: 'error',
-            message: 'Invalid role'
-          });
-          return;
-        }
-
-        // Avoid registering one socket in multiple sessions.
-        if (ws.sessionId && ws.sessionId !== sessionId) {
-          safeSend(ws, {
-            type: 'error',
-            message: 'Socket is already registered to another session'
-          });
-          return;
-        }
-
-        const session = getSession(sessionId);
-
-        ws.sessionId = sessionId;
-        ws.role = msg.role;
-
-        if (msg.role === 'producer') {
-          if (session.producer && session.producer !== ws) {
-            console.log(
-              `[i] Replacing producer for session ${sessionId}`
-            );
-
-            // Close old producer so its stale socket cannot
-            // accidentally clear the new producer on close.
-            const oldProducer = session.producer;
-            session.producer = ws;
-
-            oldProducer.close(4001, 'Producer replaced');
-          } else {
-            session.producer = ws;
-          }
-
-          console.log(
-            `[i] ${ws.id} registered as PRODUCER for "${sessionId}"`
-          );
-
-          session.viewers.forEach((viewer) => {
-            safeSend(viewer, {
-              type: 'producer-available',
-              sessionId
-            });
-
+        try {
+            msg = JSON.parse(raw.toString());
+        } catch {
             safeSend(ws, {
-              type: 'viewer-joined',
-              sessionId,
-              viewerId: viewer.id
+                type: 'error',
+                message: 'Invalid JSON'
             });
-          });
-        } else {
-          session.viewers.add(ws);
+            return;
+        }
 
-          console.log(
-            `[i] ${ws.id} registered as VIEWER for "${sessionId}"`
-          );
+        const { type, sessionId } = msg;
 
-          if (session.producer) {
+        if (type === 'ping') {
+            safeSend(ws, { type: 'pong' });
+            return;
+        }
+
+        if (!sessionId) {
             safeSend(ws, {
-              type: 'producer-available',
-              sessionId
+                type: 'error',
+                message: 'sessionId is required'
             });
-
-            safeSend(session.producer, {
-              type: 'viewer-joined',
-              sessionId,
-              viewerId: ws.id
-            });
-          }
+            return;
         }
 
-        safeSend(ws, {
-          type: 'registered',
-          sessionId,
-          role: msg.role,
-          clientId: ws.id
-        });
+        switch (type) {
+            // ------------------------------------------------
+            // REGISTER
+            // ------------------------------------------------
 
-        break;
-      }
+            case 'register': {
+                if (!['producer', 'viewer'].includes(msg.role)) {
+                    safeSend(ws, {
+                        type: 'error',
+                        message: 'Invalid role'
+                    });
+                    return;
+                }
 
-      // ------------------------------------------------------
-      // OFFER / ANSWER / ICE CANDIDATE
-      // ------------------------------------------------------
+                if (ws.sessionId && ws.sessionId !== sessionId) {
+                    safeSend(ws, {
+                        type: 'error',
+                        message: 'Socket already registered'
+                    });
+                    return;
+                }
 
-      case 'offer':
-      case 'answer':
-      case 'ice-candidate': {
-        const session = sessions.get(sessionId);
+                const session = getSession(sessionId);
 
-        if (!session) {
-          break;
+                if (session.ending) {
+                    safeSend(ws, {
+                        type: 'session-ended',
+                        sessionId
+                    });
+                    ws.close(4002, 'Session ended');
+                    return;
+                }
+
+                ws.sessionId = sessionId;
+                ws.role = msg.role;
+
+                if (msg.role === 'producer') {
+                    if (session.producer && session.producer !== ws) {
+                        const oldProducer = session.producer;
+                        session.producer = ws;
+                        oldProducer.close(4001, 'Producer replaced');
+                    } else {
+                        session.producer = ws;
+                    }
+
+                    session.viewers.forEach((viewer) => {
+                        safeSend(viewer, {
+                            type: 'producer-available',
+                            sessionId
+                        });
+
+                        safeSend(ws, {
+                            type: 'viewer-joined',
+                            sessionId,
+                            viewerId: viewer.id
+                        });
+                    });
+
+                    console.log(`[i] Producer registered: ${sessionId}`);
+                } else {
+                    session.viewers.add(ws);
+
+                    if (session.producer) {
+                        safeSend(ws, {
+                            type: 'producer-available',
+                            sessionId
+                        });
+
+                        safeSend(session.producer, {
+                            type: 'viewer-joined',
+                            sessionId,
+                            viewerId: ws.id
+                        });
+                    }
+
+                    console.log(`[i] Viewer registered: ${ws.id}`);
+                }
+
+                safeSend(ws, {
+                    type: 'registered',
+                    sessionId,
+                    role: msg.role,
+                    clientId: ws.id
+                });
+
+                break;
+            }
+
+            // ------------------------------------------------
+            // END SESSION — VIEWER DISCONNECT BUTTON
+            // ------------------------------------------------
+
+            case 'end-session': {
+                if (
+                    ws.role !== 'viewer' ||
+                    ws.sessionId !== sessionId
+                ) {
+                    safeSend(ws, {
+                        type: 'error',
+                        message: 'Only a registered viewer can end this session'
+                    });
+                    return;
+                }
+
+                endSession(sessionId, `viewer ${ws.id}`);
+
+                break;
+            }
+
+            // ------------------------------------------------
+            // WEBRTC SIGNALING
+            // ------------------------------------------------
+
+            case 'offer':
+            case 'answer':
+            case 'ice-candidate': {
+                const session = sessions.get(sessionId);
+
+                if (!session || session.ending) {
+                    return;
+                }
+
+                if (ws.role === 'producer') {
+                    if (msg.targetId) {
+                        const target = [...session.viewers].find(
+                            (viewer) => viewer.id === msg.targetId
+                        );
+
+                        safeSend(target, {
+                            ...msg,
+                            fromId: ws.id
+                        });
+                    } else {
+                        session.viewers.forEach((viewer) => {
+                            safeSend(viewer, {
+                                ...msg,
+                                fromId: ws.id
+                            });
+                        });
+                    }
+                } else if (ws.role === 'viewer') {
+                    safeSend(session.producer, {
+                        ...msg,
+                        fromId: ws.id
+                    });
+                }
+
+                break;
+            }
+
+            default:
+                console.log(`[!] Unknown message: ${type}`);
         }
+    });
 
-        if (ws.role === 'producer') {
-          if (msg.targetId) {
-            const target = [...session.viewers].find(
-              (viewer) => viewer.id === msg.targetId
-            );
+    // ========================================================
+    // DISCONNECT
+    // ========================================================
 
-            safeSend(target, {
-              ...msg,
-              fromId: ws.id
-            });
-          } else {
-            session.viewers.forEach((viewer) => {
-              safeSend(viewer, {
-                ...msg,
-                fromId: ws.id
-              });
-            });
-          }
-        } else if (ws.role === 'viewer') {
-          safeSend(session.producer, {
-            ...msg,
-            fromId: ws.id
-          });
-        }
-
-        break;
-      }
-
-      // ------------------------------------------------------
-      // PING
-      // ------------------------------------------------------
-
-      case 'ping': {
-        safeSend(ws, { type: 'pong' });
-        break;
-      }
-
-      default:
-        console.warn(
-          `[!] Unknown message type "${type}" from ${ws.id}`
-        );
-    }
-  });
-
-  // ==========================================================
-  // DISCONNECT — BOTH DIRECTIONS
-  // ==========================================================
-
-  ws.on('close', () => {
-    console.log(
-      `[-] Client disconnected: ${ws.id} (role=${ws.role})`
-    );
-
-    if (!ws.sessionId) {
-      return;
-    }
-
-    const session = sessions.get(ws.sessionId);
-
-    if (!session) {
-      return;
-    }
-
-    // --------------------------------------------------------
-    // PRODUCER / HOST DISCONNECTED
-    // --------------------------------------------------------
-
-    if (session.producer === ws) {
-      session.producer = null;
-
-      console.log(
-        `[i] Producer disconnected from ${ws.sessionId}`
-      );
-
-      session.viewers.forEach((viewer) => {
-        safeSend(viewer, {
-          type: 'producer-left',
-          sessionId: ws.sessionId
-        });
-      });
-    }
-
-    // --------------------------------------------------------
-    // VIEWER DISCONNECTED
-    // --------------------------------------------------------
-
-    if (ws.role === 'viewer') {
-      session.viewers.delete(ws);
-
-      console.log(
-        `[i] Viewer ${ws.id} disconnected from ${ws.sessionId}`
-      );
-
-      // Notify host so the Swift app can stop streaming
-      // when no viewers remain.
-      if (session.producer) {
-        safeSend(session.producer, {
-          type: 'viewer-left',
-          sessionId: ws.sessionId,
-          viewerId: ws.id,
-          remainingViewers: session.viewers.size
-        });
-
+    ws.on('close', () => {
         console.log(
-          `[i] viewer-left sent to producer. Remaining viewers: ${session.viewers.size}`
+            `[-] Client disconnected: ${ws.id} (${ws.role})`
         );
-      }
-    }
 
-    // --------------------------------------------------------
-    // REMOVE EMPTY SESSION
-    // --------------------------------------------------------
+        if (!ws.sessionId) return;
 
-    if (!session.producer && session.viewers.size === 0) {
-      sessions.delete(ws.sessionId);
+        const session = sessions.get(ws.sessionId);
+        if (!session) return;
 
-      console.log(
-        `[i] Empty session removed: ${ws.sessionId}`
-      );
-    }
-  });
+        if (session.producer === ws) {
+            session.producer = null;
 
-  ws.on('error', (err) => {
-    console.error(
-      `[!] Socket error on ${ws.id}:`,
-      err.message
-    );
-  });
+            session.viewers.forEach((viewer) => {
+                safeSend(viewer, {
+                    type: 'producer-left',
+                    sessionId: ws.sessionId
+                });
+            });
+        }
+
+        session.viewers.delete(ws);
+
+        if (!session.producer && session.viewers.size === 0) {
+            sessions.delete(ws.sessionId);
+        }
+    });
+
+    ws.on('error', (error) => {
+        console.error(`[!] Socket error ${ws.id}:`, error.message);
+    });
 });
 
 // ============================================================
@@ -369,20 +388,15 @@ wss.on('connection', (ws) => {
 // ============================================================
 
 httpServer.listen(PORT, '0.0.0.0', () => {
-  console.log('='.repeat(60));
-  console.log('FPSMonitor Server');
-  console.log('='.repeat(60));
+    console.log('='.repeat(55));
+    console.log('CALLITNOW / FPSMonitor Server');
+    console.log(`HTTP: http://localhost:${PORT}`);
+    console.log(`WS:   ws://localhost:${PORT}`);
+    console.log('LAN addresses:');
 
-  console.log(`HTTP/Web Viewer: http://localhost:${PORT}`);
-  console.log(`WebSocket:       ws://localhost:${PORT}`);
+    getLocalIPs().forEach((ip) => {
+        console.log(`  http://${ip}:${PORT}/`);
+    });
 
-  console.log('');
-  console.log('Reachable on LAN:');
-
-  getLocalIPs().forEach((ip) => {
-    console.log(`  Web Viewer : http://${ip.address}:${PORT}/`);
-    console.log(`  WebSocket  : ws://${ip.address}:${PORT}`);
-  });
-
-  console.log('='.repeat(60));
+    console.log('='.repeat(55));
 });
