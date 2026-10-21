@@ -144,7 +144,7 @@ wss.on('connection', (ws) => {
           return;
         }
 
-        // Avoid registering one socket in multiple sessions.
+        // Prevent a socket from registering in another session.
         if (ws.sessionId && ws.sessionId !== sessionId) {
           safeSend(ws, {
             type: 'error',
@@ -153,10 +153,54 @@ wss.on('connection', (ws) => {
           return;
         }
 
+        // Prevent changing roles or duplicate registration.
+        if (ws.sessionId === sessionId && ws.role) {
+          if (ws.role !== msg.role) {
+            safeSend(ws, {
+              type: 'error',
+              message: 'Socket is already registered with another role'
+            });
+          }
+
+          return;
+        }
+
         const session = getSession(sessionId);
+
+        // ----------------------------------------------------
+        // SINGLE VIEWER LIMIT
+        // Only one active viewer per session is allowed.
+        // ----------------------------------------------------
+
+        if (msg.role === 'viewer') {
+          // Clean up sockets that are no longer open.
+          for (const viewer of session.viewers) {
+            if (viewer.readyState !== WebSocket.OPEN) {
+              session.viewers.delete(viewer);
+            }
+          }
+
+          if (session.viewers.size >= 1) {
+            console.log(
+              `[i] Viewer ${ws.id} rejected: session "${sessionId}" is busy`
+            );
+
+            safeSend(ws, {
+              type: 'error',
+              message: 'Stream is busy. Another viewer is already connected.'
+            });
+
+            // Do not register the rejected viewer.
+            return;
+          }
+        }
 
         ws.sessionId = sessionId;
         ws.role = msg.role;
+
+        // ----------------------------------------------------
+        // PRODUCER REGISTRATION
+        // ----------------------------------------------------
 
         if (msg.role === 'producer') {
           if (session.producer && session.producer !== ws) {
@@ -164,8 +208,6 @@ wss.on('connection', (ws) => {
               `[i] Replacing producer for session ${sessionId}`
             );
 
-            // Close old producer so its stale socket cannot
-            // accidentally clear the new producer on close.
             const oldProducer = session.producer;
             session.producer = ws;
 
@@ -191,6 +233,11 @@ wss.on('connection', (ws) => {
             });
           });
         } else {
+          // --------------------------------------------------
+          // VIEWER REGISTRATION
+          // Reached only when the viewer limit permits access.
+          // --------------------------------------------------
+
           session.viewers.add(ws);
 
           console.log(
