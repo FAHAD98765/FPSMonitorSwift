@@ -1,5 +1,41 @@
-const params = new URLSearchParams(window.location.search);
-const sessionId = params.get("session");
+// NOTE: named viewerParams (not params): index.html's inline script
+// already declares a global "params", and declaring it twice stops
+// this whole file from running.
+const viewerParams = new URLSearchParams(window.location.search);
+const sessionId =
+    viewerParams.get("session") ||
+    viewerParams.get("sessionId");
+
+// ============================================================
+// DEBUG FLAGS
+//
+// Both are OFF by default so the page stays smooth. Chrome
+// serialises every logged object (especially with DevTools open),
+// which keeps the main thread busy and competes with video
+// decode/render. Errors, warnings and new line-call events are
+// always logged, whatever these flags say.
+//
+//   LINECALL_DEBUG -> per-poll API logs, map / replay / badge details
+//   WEBRTC_DEBUG   -> signaling + ICE chatter, and the once-a-second
+//                     getStats() monitor
+//
+// To debug, change the one you need to true.
+// ============================================================
+
+const LINECALL_DEBUG = false;
+const WEBRTC_DEBUG = false;
+
+function dlog(...args) {
+    if (LINECALL_DEBUG) {
+        console.log(...args);
+    }
+}
+
+function wlog(...args) {
+    if (WEBRTC_DEBUG) {
+        console.log(...args);
+    }
+}
 
 const statusElement = document.getElementById("status");
 const videoElement = document.getElementById("remoteVideo");
@@ -16,7 +52,7 @@ const STATS_INTERVAL_MS = 1000;
 let renderedFrames = 0;
 let lastFPSCheck = performance.now();
 
-let animationFrameId = null;
+let fpsIntervalId = null;
 let videoFrameCallbackId = null;
 let statsIntervalId = null;
 
@@ -144,7 +180,7 @@ function connectSignaling() {
         try {
             const message = JSON.parse(event.data);
 
-            console.log("[WS] Message:", message);
+            wlog("[WS] Message:", message.type);
 
             switch (message.type) {
                 case "registered":
@@ -203,7 +239,7 @@ function connectSignaling() {
                 }
 
                 case "pong":
-                    console.log("[WS] Pong received");
+                    wlog("[WS] Pong received");
                     break;
 
                 default:
@@ -351,7 +387,7 @@ async function createPeerConnection() {
     peerConnection.oniceconnectionstatechange = () => {
         if (!peerConnection) return;
 
-        console.log(
+        wlog(
             "[WebRTC] ICE state:",
             peerConnection.iceConnectionState
         );
@@ -434,7 +470,7 @@ async function handleRemoteCandidate(message) {
 
         if (!peerConnection.remoteDescription) {
             remoteCandidatesQueue.push(candidate);
-            console.log(
+            wlog(
                 "[ICE] Candidate queued:",
                 remoteCandidatesQueue.length
             );
@@ -443,7 +479,7 @@ async function handleRemoteCandidate(message) {
 
         await peerConnection.addIceCandidate(candidate);
 
-        console.log("[ICE] Remote candidate added");
+        wlog("[ICE] Remote candidate added");
     } catch (error) {
         console.error("[ICE] Failed to add candidate:", error);
     }
@@ -459,7 +495,7 @@ async function flushRemoteCandidates() {
             if (!peerConnection || viewerRejected) return;
 
             await peerConnection.addIceCandidate(candidate);
-            console.log("[ICE] Queued candidate added");
+            wlog("[ICE] Queued candidate added");
         } catch (error) {
             console.error("[ICE] Failed to add queued candidate:", error);
         }
@@ -513,23 +549,34 @@ function updateFPS() {
     const now = performance.now();
     const elapsed = now - lastFPSCheck;
 
-    if (elapsed >= 1000) {
-        const fps = renderedFrames * 1000 / elapsed;
-
-        if (fpsElement) {
-            const currentFPS = fps.toFixed(1);
-            const targetStatus =
-                fps >= TARGET_FPS - 0.5 ? "TARGET" : "BELOW TARGET";
-
-            fpsElement.textContent =
-                `FPS: ${currentFPS} / ${TARGET_FPS} (${targetStatus})`;
-        }
-
+    // Nothing is playing -> leave the "FPS: --" text alone and
+    // skip the DOM write.
+    if (
+        !videoElement.srcObject ||
+        videoElement.paused
+    ) {
         renderedFrames = 0;
         lastFPSCheck = now;
+        return;
     }
 
-    animationFrameId = requestAnimationFrame(updateFPS);
+    if (elapsed <= 0) {
+        return;
+    }
+
+    const fps = renderedFrames * 1000 / elapsed;
+
+    if (fpsElement) {
+        const currentFPS = fps.toFixed(1);
+        const targetStatus =
+            fps >= TARGET_FPS - 0.5 ? "TARGET" : "BELOW TARGET";
+
+        fpsElement.textContent =
+            `FPS: ${currentFPS} / ${TARGET_FPS} (${targetStatus})`;
+    }
+
+    renderedFrames = 0;
+    lastFPSCheck = now;
 }
 
 // ============================================================
@@ -606,13 +653,19 @@ if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) {
     });
 }
 
-animationFrameId = requestAnimationFrame(updateFPS);
+// Once a second is enough for the FPS text. (It used to run a
+// callback on every screen frame, ~60 times a second.)
+fpsIntervalId = setInterval(updateFPS, 1000);
 
 // ============================================================
 // WEBRTC STATS - RECEIVE FPS, DROPS, PACKET LOSS, RTT
 // ============================================================
 
 function startStatsMonitoring() {
+    // getStats() every second + two console logs per tick is
+    // debug-only work, skipped entirely unless WEBRTC_DEBUG is on.
+    if (!WEBRTC_DEBUG) return;
+
     if (statsIntervalId !== null) return;
 
     statsIntervalId = setInterval(
@@ -817,7 +870,9 @@ if (
 }
 
 const LINECALL_SHOW_MS = 2000;
-const LINECALL_MIN_GAP_MS = 200;
+// Pause between polls. 500ms is plenty for line calls and keeps
+// the page quiet (it was 200ms = ~5 requests every second).
+const LINECALL_MIN_GAP_MS = 500;
 const LINECALL_ERROR_RETRY_MS = 300;
 const LINECALL_REQUEST_TIMEOUT_MS = 5000;
 
@@ -842,7 +897,7 @@ const courtMapWrapElement =
 const courtMapEmptyElement =
     document.getElementById("courtMapEmpty");
 
-console.log(
+dlog(
     "[LineCall] DOM elements found:",
     {
         lineCallElement: !!lineCallElement,
@@ -931,7 +986,7 @@ function isBounceEvent(event) {
 }
 
 function hideLineCall() {
-    console.log("[LineCall] Hiding badge (timer expired).");
+    dlog("[LineCall] Hiding badge (timer expired).");
 
     lineCallElement.classList.remove("show");
 }
@@ -948,11 +1003,14 @@ function hideLineCall() {
 
 const COURT_MAP_SCALE = 10; // SVG units per foot
 
+// Keeps the SVG light on very long sessions (oldest dots go first).
+const MAX_MAP_DOTS = 300;
+
 const DEFAULT_COURT_DIMENSIONS = {
-    court_w_ft: 20,
-    court_h_ft: 44,
-    net_offset: 22,
-    kitchen_ft: 7
+    court_w_ft: 20.0,
+    court_h_ft: 44.0,
+    net_offset: 22.0,
+    kitchen_ft: 7.0
 };
 
 let courtMapDims = null;
@@ -973,7 +1031,7 @@ function dimensionsChanged(a, b) {
 }
 
 function buildCourtMap(dims) {
-    console.log(
+    dlog(
         "[CourtMap] Building court map with dimensions:",
         dims
     );
@@ -1061,10 +1119,7 @@ function addCourtMapDot(event, result) {
         return;
     }
 
-    const dims =
-        event.court_dimensions ||
-        courtMapDims ||
-        DEFAULT_COURT_DIMENSIONS;
+const dims = DEFAULT_COURT_DIMENSIONS;
 
     if (
         !courtMapSvgElement ||
@@ -1120,11 +1175,15 @@ function addCourtMapDot(event, result) {
 
     courtMapDotsGroup.appendChild(dot);
 
+    while (courtMapDotsGroup.childNodes.length > MAX_MAP_DOTS) {
+        courtMapDotsGroup.removeChild(courtMapDotsGroup.firstChild);
+    }
+
     setTimeout(() => dot.classList.remove("new"), 600);
 
     courtMapEmptyElement.style.display = "none";
 
-    console.log("[CourtMap] 🟢 Plotted bounce:", {
+    dlog("[CourtMap] 🟢 Plotted bounce:", {
         x: courtLocation.x,
         y: courtLocation.y,
         result: dotClass
@@ -1136,6 +1195,14 @@ function addCourtMapDot(event, result) {
 // ============================================================
 
 const MAX_REPLAYS = 40;
+
+// "none": a new clip does NOT start downloading by itself. The clips
+// are .mov files, and downloading them while the live stream is
+// running steals bandwidth and makes the live video stutter every
+// time a line call arrives. A clip loads when you press play.
+// Use "metadata" if you want a thumbnail frame on every card
+// (costs bandwidth + decoder memory for each clip).
+const REPLAY_PRELOAD = "none";
 
 let totalCalls = 0;
 
@@ -1154,7 +1221,7 @@ async function downloadClip(clipUrl, button) {
         // Keep the default file name.
     }
 
-    console.log("[Replay] ⬇ Downloading clip:", clipUrl);
+    dlog("[Replay] ⬇ Downloading clip:", clipUrl);
 
     button.classList.add("busy");
     button.textContent = "...";
@@ -1196,7 +1263,7 @@ async function downloadClip(clipUrl, button) {
 }
 
 function addReplay(clipUrl, callNumber, result) {
-    console.log("[Replay] 🎬 Adding replay card:", callNumber, clipUrl);
+    dlog("[Replay] 🎬 Adding replay card:", callNumber, clipUrl);
 
     const card = document.createElement("div");
 
@@ -1208,8 +1275,11 @@ function addReplay(clipUrl, callNumber, result) {
     video.controls = true;
     video.muted = true;
     video.playsInline = true;
-    video.preload = "metadata";
-    video.src = clipUrl + "#t=0.1";
+    video.preload = REPLAY_PRELOAD;
+    video.src =
+        REPLAY_PRELOAD === "none"
+            ? clipUrl
+            : clipUrl + "#t=0.1";
 
     video.addEventListener("error", () => {
         console.warn(
@@ -1265,7 +1335,7 @@ function addReplay(clipUrl, callNumber, result) {
 }
 
 function showLineCall(event) {
-    console.log("[LineCall] 📣 Displaying event on screen:", event);
+    dlog("[LineCall] 📣 Displaying event on screen:", event);
 
     const rawResult =
         String(event.in_out || "").toLowerCase();
@@ -1276,7 +1346,7 @@ function showLineCall(event) {
 
     const result = isUncertain ? "uncertain" : rawResult;
 
-    console.log("[LineCall] Result resolution:", {
+    dlog("[LineCall] Result resolution:", {
         rawResult,
         confidence_level: event.confidence_level,
         isUncertain,
@@ -1317,7 +1387,7 @@ function showLineCall(event) {
     if (isBounceEvent(event)) {
         addCourtMapDot(event, result);
     } else {
-        console.log(
+        dlog(
             "[CourtMap] Skipping non-bounce event (type:",
             event.type,
             ", categories:",
@@ -1334,7 +1404,7 @@ function showLineCall(event) {
 
     clearTimeout(lineCallHideTimer);
 
-    console.log(
+    dlog(
         "[LineCall] Badge will auto-hide after",
         LINECALL_SHOW_MS,
         "ms"
@@ -1345,7 +1415,7 @@ function showLineCall(event) {
 
 async function pollLineCallOnce(loopId) {
     if (!isLoopActive(loopId)) {
-        console.log("[LineCall] Skipping poll, loop is not active.");
+        dlog("[LineCall] Skipping poll, loop is not active.");
         return;
     }
 
@@ -1365,27 +1435,27 @@ async function pollLineCallOnce(loopId) {
             `${LINECALL_API_BASE}/tracknet/realtime/notifications/` +
             `${encodeURIComponent(sessionId)}/latest`;
 
-        console.log(`[LineCall] API HIT #${lineCallPollCount}:`, url);
+        dlog(`[LineCall] API HIT #${lineCallPollCount}:`, url);
 
         const response = await fetch(url, {
             cache: "no-store",
             signal: controller.signal
         });
 
-        console.log(
+        dlog(
             `[LineCall] API response status #${lineCallPollCount}:`,
             response.status
         );
 
         if (!isLoopActive(loopId)) {
-            console.log(
+            dlog(
                 "[LineCall] Loop stopped while request was in flight, discarding response."
             );
             return;
         }
 
         if (response.status === 404) {
-            console.log(
+            dlog(
                 "[LineCall] 404 - no event available yet for this session."
             );
             lineCallFirstPoll = false;
@@ -1399,13 +1469,13 @@ async function pollLineCallOnce(loopId) {
         const data = await response.json();
 
         if (!isLoopActive(loopId)) {
-            console.log(
+            dlog(
                 "[LineCall] Loop stopped while parsing JSON, discarding response."
             );
             return;
         }
 
-        console.log("[LineCall] Raw response:", data);
+        dlog("[LineCall] Raw response:", data);
 
         // The API sometimes returns 200 with a plain empty object
         // ("{}") instead of a 404 when there's no event yet. Treat
@@ -1417,7 +1487,7 @@ async function pollLineCallOnce(loopId) {
             Object.keys(data).length === 0;
 
         if (isEmptyObject) {
-            console.log(
+            dlog(
                 "[LineCall] Empty {} response - no event yet for this session."
             );
             lineCallFirstPoll = false;
@@ -1441,7 +1511,7 @@ async function pollLineCallOnce(loopId) {
             return;
         }
 
-        console.log(
+        dlog(
             "[LineCall] event_id from API:",
             event.event_id,
             "| last seen:",
@@ -1456,7 +1526,7 @@ async function pollLineCallOnce(loopId) {
             lineCallFirstPoll = false;
             lastLineCallEventId = event.event_id;
 
-            console.log(
+            dlog(
                 "[LineCall] Initial event remembered (not shown):",
                 event.event_id
             );
@@ -1471,7 +1541,7 @@ async function pollLineCallOnce(loopId) {
             showLineCall(event);
 
         } else {
-            console.log(
+            dlog(
                 "[LineCall] Same event as last poll, nothing new. event_id:",
                 event.event_id
             );
@@ -1492,14 +1562,14 @@ function startLineCallPolling() {
     }
 
     if (lineCallLoopRunning) {
-        console.log("[LineCall] Polling already running.");
+        dlog("[LineCall] Polling already running.");
         return;
     }
 
     console.log("[LineCall] 🟢 Starting API polling");
-    console.log("[LineCall] Session ID:", sessionId);
+    dlog("[LineCall] Session ID:", sessionId);
 
-    console.log("[LineCall] Config:", {
+    dlog("[LineCall] Config:", {
         LINECALL_API_BASE,
         LINECALL_SHOW_MS,
         LINECALL_MIN_GAP_MS,
@@ -1523,7 +1593,7 @@ function startLineCallPolling() {
 function stopLineCallPolling() {
     if (!lineCallLoopRunning) {
         if (activeLineCallController) {
-            console.log(
+            dlog(
                 "[LineCall] Loop already stopped, but aborting a stray in-flight request."
             );
             activeLineCallController.abort();
@@ -1541,7 +1611,7 @@ function stopLineCallPolling() {
     lineCallLoopRunning = false;
 
     if (activeLineCallController) {
-        console.log("[LineCall] Aborting active API request...");
+        dlog("[LineCall] Aborting active API request...");
         activeLineCallController.abort();
         activeLineCallController = null;
     }
@@ -1551,13 +1621,13 @@ function stopLineCallPolling() {
     // the badge is currently showing, it stays on screen (and still
     // auto-hides on its own normal timer from showLineCall) even
     // though the stream disconnected.
-    console.log(
+    dlog(
         "[LineCall] Leaving any currently visible line call as-is."
     );
 }
 
 async function lineCallLoop(myLoopId) {
-    console.log("[LineCall] Polling loop starting. Loop ID:", myLoopId);
+    dlog("[LineCall] Polling loop starting. Loop ID:", myLoopId);
 
     while (isLoopActive(myLoopId)) {
         try {
@@ -1585,7 +1655,7 @@ async function lineCallLoop(myLoopId) {
             //      disconnect. Must keep polling.
             if (error && error.name === "AbortError") {
                 if (!isLoopActive(myLoopId)) {
-                    console.log("[LineCall] Request aborted (disconnect).");
+                    dlog("[LineCall] Request aborted (disconnect).");
                     break;
                 }
 
@@ -1609,7 +1679,7 @@ async function lineCallLoop(myLoopId) {
         }
     }
 
-    console.log(
+    dlog(
         "[LineCall] Polling loop stopped. Loop ID:",
         myLoopId,
         "| Total polls made:",
@@ -1631,9 +1701,9 @@ window.addEventListener("beforeunload", () => {
         activeLineCallController = null;
     }
 
-    if (animationFrameId !== null) {
-        cancelAnimationFrame(animationFrameId);
-        animationFrameId = null;
+    if (fpsIntervalId !== null) {
+        clearInterval(fpsIntervalId);
+        fpsIntervalId = null;
     }
 
     if (socket) {

@@ -149,9 +149,11 @@
 
         .status-badge,
         .fps-badge {
-            background: rgba(20, 22, 26, 0.78);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
+            /* No backdrop-filter here: blurring the playing video
+               behind a badge is re-done on every video frame and is
+               a common cause of GPU lag. A solid-ish colour looks
+               almost the same and costs nothing. */
+            background: rgba(14, 16, 20, 0.86);
 
             border: 1px solid rgba(255, 255, 255, 0.08);
             border-radius: 999px;
@@ -212,9 +214,7 @@
             padding: 14px 28px;
             border-radius: 16px;
 
-            background: rgba(0, 0, 0, 0.72);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
+            background: rgba(0, 0, 0, 0.82);
             border: 2px solid var(--red);
             box-shadow: 0 0 30px var(--red-glow);
 
@@ -726,6 +726,7 @@
 
 
     <script>
+        (function () {
         /*
          * Display current session ID.
          * app.js continues to handle WebRTC/signaling.
@@ -750,6 +751,7 @@
             sessionDisplay.textContent =
                 `Session: ${session}`;
         }
+        })();
     </script>
 
 
