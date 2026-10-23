@@ -10,17 +10,12 @@ const WEB_ROOT = path.resolve(__dirname, 'WebViewer');
 // ============================================================
 // LINE CALL PUSH (backend -> this server -> viewers)
 //
-// The tracking backend POSTs each line call event here:
+// POST /linecall/<sessionId>
+// Header: x-api-key: <LINECALL_SECRET>
+// Body:   event JSON with event_id and session_id
 //
-//   POST /linecall/<sessionId>
-//   Header:  x-api-key: <LINECALL_SECRET>
-//   Body:    the event JSON (must contain event_id)
-//
-// The server forwards it to every viewer of that session over the
-// WebSocket that is already open, so the viewer does not need to
-// poll anything.
-//
-// Set the secret on Fly:   fly secrets set LINECALL_SECRET=your-long-random-string
+// Configure on Fly.io:
+// fly secrets set LINECALL_SECRET=your-long-random-string
 // ============================================================
 
 const LINECALL_SECRET = process.env.LINECALL_SECRET || '';
@@ -28,16 +23,11 @@ const LINECALL_MAX_BODY_BYTES = 256 * 1024;
 
 if (!LINECALL_SECRET) {
   console.warn(
-    '[!] LINECALL_SECRET is not set. POST /linecall/... will be rejected (503) until you set it.'
+    '[!] LINECALL_SECRET is not set. POST /linecall/... will return 503.'
   );
 }
 
-// sessionId -> latest line call event (so a viewer who joins or
-// reconnects knows what the current "latest" is and does not
-// replay an old call).
 const lastLineCallEvents = new Map();
-
-// sessionId -> { producer: ws|null, viewers: Set<ws> }
 const sessions = new Map();
 
 function getSession(sessionId) {
@@ -84,7 +74,6 @@ function sendJson(res, status, obj) {
   res.end(JSON.stringify(obj));
 }
 
-// Constant-time-ish comparison so the key cannot be guessed by timing.
 function secretsMatch(a, b) {
   const bufA = Buffer.from(String(a || ''));
   const bufB = Buffer.from(String(b || ''));
@@ -98,13 +87,19 @@ function secretsMatch(a, b) {
 
 function handleLineCallPost(req, res, sessionId) {
   if (!LINECALL_SECRET) {
-    sendJson(res, 503, { ok: false, error: 'LINECALL_SECRET not configured on server' });
+    sendJson(res, 503, {
+      ok: false,
+      error: 'LINECALL_SECRET not configured on server'
+    });
     req.resume();
     return;
   }
 
   if (!secretsMatch(req.headers['x-api-key'], LINECALL_SECRET)) {
-    sendJson(res, 401, { ok: false, error: 'Invalid API key' });
+    sendJson(res, 401, {
+      ok: false,
+      error: 'Invalid API key'
+    });
     req.resume();
     return;
   }
@@ -120,7 +115,10 @@ function handleLineCallPost(req, res, sessionId) {
 
     if (size > LINECALL_MAX_BODY_BYTES) {
       aborted = true;
-      sendJson(res, 413, { ok: false, error: 'Body too large' });
+      sendJson(res, 413, {
+        ok: false,
+        error: 'Body too large'
+      });
       req.destroy();
       return;
     }
@@ -136,25 +134,54 @@ function handleLineCallPost(req, res, sessionId) {
     try {
       event = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     } catch (error) {
-      sendJson(res, 400, { ok: false, error: 'Body must be valid JSON' });
+      sendJson(res, 400, {
+        ok: false,
+        error: 'Body must be valid JSON'
+      });
       return;
     }
 
     if (!event || typeof event !== 'object' || Array.isArray(event)) {
-      sendJson(res, 400, { ok: false, error: 'Body must be a JSON object' });
+      sendJson(res, 400, {
+        ok: false,
+        error: 'Body must be a JSON object'
+      });
       return;
     }
 
-    // Accept either the event itself or { event: {...} }.
+    // Accept the event itself or { event: {...} }.
     if (!event.event_id && event.event && event.event.event_id) {
       event = event.event;
     }
 
     if (!event.event_id) {
-      sendJson(res, 400, { ok: false, error: 'event_id is required' });
+      sendJson(res, 400, {
+        ok: false,
+        error: 'event_id is required'
+      });
       return;
     }
 
+    // The payload session ID must match the URL session ID.
+    if (typeof event.session_id !== 'string' || !event.session_id.trim()) {
+      sendJson(res, 400, {
+        ok: false,
+        error: 'session_id is required in event JSON'
+      });
+      return;
+    }
+
+    if (event.session_id.trim() !== sessionId) {
+      sendJson(res, 409, {
+        ok: false,
+        error: 'session_id does not match URL sessionId',
+        url_session_id: sessionId,
+        event_session_id: event.session_id.trim()
+      });
+      return;
+    }
+
+    // Preserve the full payload for the WebViewer.
     lastLineCallEvents.set(sessionId, event);
 
     const session = sessions.get(sessionId);
@@ -178,12 +205,18 @@ function handleLineCallPost(req, res, sessionId) {
       `[LineCall] "${sessionId}" event ${event.event_id} -> ${delivered} viewer(s)`
     );
 
-    sendJson(res, 200, { ok: true, delivered });
+    sendJson(res, 200, {
+      ok: true,
+      delivered
+    });
   });
 
   req.on('error', () => {
     if (!res.headersSent) {
-      sendJson(res, 400, { ok: false, error: 'Request error' });
+      sendJson(res, 400, {
+        ok: false,
+        error: 'Request error'
+      });
     }
   });
 }
@@ -194,10 +227,6 @@ function handleLineCallPost(req, res, sessionId) {
 
 const httpServer = http.createServer((req, res) => {
   let requestPath = (req.url || '/').split('?')[0];
-
-  // ----------------------------------------------------------
-  // POST /linecall/<sessionId>
-  // ----------------------------------------------------------
 
   const lineCallMatch = requestPath.match(/^\/linecall\/([^/]+)\/?$/);
 
@@ -213,7 +242,10 @@ const httpServer = http.createServer((req, res) => {
     try {
       sessionId = decodeURIComponent(lineCallMatch[1]);
     } catch (error) {
-      sendJson(res, 400, { ok: false, error: 'Bad session id' });
+      sendJson(res, 400, {
+        ok: false,
+        error: 'Bad session id'
+      });
       return;
     }
 
@@ -294,15 +326,10 @@ wss.on('connection', (ws) => {
         type: 'error',
         message: 'sessionId is required'
       });
-
       return;
     }
 
     switch (type) {
-      // ------------------------------------------------------
-      // REGISTER
-      // ------------------------------------------------------
-
       case 'register': {
         if (!['producer', 'viewer'].includes(msg.role)) {
           safeSend(ws, {
@@ -312,7 +339,6 @@ wss.on('connection', (ws) => {
           return;
         }
 
-        // Prevent a socket from registering in another session.
         if (ws.sessionId && ws.sessionId !== sessionId) {
           safeSend(ws, {
             type: 'error',
@@ -321,7 +347,6 @@ wss.on('connection', (ws) => {
           return;
         }
 
-        // Prevent changing roles or duplicate registration.
         if (ws.sessionId === sessionId && ws.role) {
           if (ws.role !== msg.role) {
             safeSend(ws, {
@@ -329,19 +354,13 @@ wss.on('connection', (ws) => {
               message: 'Socket is already registered with another role'
             });
           }
-
           return;
         }
 
         const session = getSession(sessionId);
 
-        // ----------------------------------------------------
-        // SINGLE VIEWER LIMIT
-        // Only one active viewer per session is allowed.
-        // ----------------------------------------------------
-
+        // Only one active viewer per session.
         if (msg.role === 'viewer') {
-          // Clean up sockets that are no longer open.
           for (const viewer of session.viewers) {
             if (viewer.readyState !== WebSocket.OPEN) {
               session.viewers.delete(viewer);
@@ -357,18 +376,12 @@ wss.on('connection', (ws) => {
               type: 'error',
               message: 'Stream is busy. Another viewer is already connected.'
             });
-
-            // Do not register the rejected viewer.
             return;
           }
         }
 
         ws.sessionId = sessionId;
         ws.role = msg.role;
-
-        // ----------------------------------------------------
-        // PRODUCER REGISTRATION
-        // ----------------------------------------------------
 
         if (msg.role === 'producer') {
           if (session.producer && session.producer !== ws) {
@@ -378,7 +391,6 @@ wss.on('connection', (ws) => {
 
             const oldProducer = session.producer;
             session.producer = ws;
-
             oldProducer.close(4001, 'Producer replaced');
           } else {
             session.producer = ws;
@@ -401,11 +413,6 @@ wss.on('connection', (ws) => {
             });
           });
         } else {
-          // --------------------------------------------------
-          // VIEWER REGISTRATION
-          // Reached only when the viewer limit permits access.
-          // --------------------------------------------------
-
           session.viewers.add(ws);
 
           console.log(
@@ -433,9 +440,7 @@ wss.on('connection', (ws) => {
           clientId: ws.id
         });
 
-        // A viewer that joins (or reconnects) is told what the
-        // current latest line call is, so the viewer treats it as
-        // old and only shows genuinely newer ones.
+        // New/reconnected viewer learns the latest event ID.
         if (msg.role === 'viewer') {
           const latest = lastLineCallEvents.get(sessionId);
 
@@ -450,10 +455,6 @@ wss.on('connection', (ws) => {
 
         break;
       }
-
-      // ------------------------------------------------------
-      // OFFER / ANSWER / ICE CANDIDATE
-      // ------------------------------------------------------
 
       case 'offer':
       case 'answer':
@@ -492,10 +493,6 @@ wss.on('connection', (ws) => {
         break;
       }
 
-      // ------------------------------------------------------
-      // PING
-      // ------------------------------------------------------
-
       case 'ping': {
         safeSend(ws, { type: 'pong' });
         break;
@@ -507,10 +504,6 @@ wss.on('connection', (ws) => {
         );
     }
   });
-
-  // ==========================================================
-  // DISCONNECT — BOTH DIRECTIONS
-  // ==========================================================
 
   ws.on('close', () => {
     console.log(
@@ -527,10 +520,6 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    // --------------------------------------------------------
-    // PRODUCER / HOST DISCONNECTED
-    // --------------------------------------------------------
-
     if (session.producer === ws) {
       session.producer = null;
 
@@ -546,10 +535,6 @@ wss.on('connection', (ws) => {
       });
     }
 
-    // --------------------------------------------------------
-    // VIEWER DISCONNECTED
-    // --------------------------------------------------------
-
     if (ws.role === 'viewer') {
       session.viewers.delete(ws);
 
@@ -557,8 +542,6 @@ wss.on('connection', (ws) => {
         `[i] Viewer ${ws.id} disconnected from ${ws.sessionId}`
       );
 
-      // Notify host so the Swift app can stop streaming
-      // when no viewers remain.
       if (session.producer) {
         safeSend(session.producer, {
           type: 'viewer-left',
@@ -573,14 +556,8 @@ wss.on('connection', (ws) => {
       }
     }
 
-    // --------------------------------------------------------
-    // REMOVE EMPTY SESSION
-    // --------------------------------------------------------
-
     if (!session.producer && session.viewers.size === 0) {
       sessions.delete(ws.sessionId);
-
-      // The next game on this session id starts fresh.
       lastLineCallEvents.delete(ws.sessionId);
 
       console.log(

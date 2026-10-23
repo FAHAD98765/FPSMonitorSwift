@@ -1,3 +1,14 @@
+
+/* ============================================================
+   FPS MONITOR WEB VIEWER
+   Updated:
+   - Every valid bounce updates the 2D court map.
+   - UNCERTAIN badge requires a dedicated LineCall marker,
+     uncertain confidence, and a valid HTTPS clip URL.
+   - Replay is only added for qualifying uncertain LineCall
+     bounce events.
+   ============================================================ */
+
 // NOTE: named viewerParams (not params): index.html's inline script
 // already declares a global "params", and declaring it twice stops
 // this whole file from running.
@@ -8,18 +19,6 @@ const sessionId =
 
 // ============================================================
 // DEBUG FLAGS
-//
-// Both are OFF by default so the page stays smooth. Chrome
-// serialises every logged object (especially with DevTools open),
-// which keeps the main thread busy and competes with video
-// decode/render. Errors, warnings and new line-call events are
-// always logged, whatever these flags say.
-//
-//   LINECALL_DEBUG -> per-poll API logs, map / replay / badge details
-//   WEBRTC_DEBUG   -> signaling + ICE chatter, and the once-a-second
-//                     getStats() monitor
-//
-// To debug, change the one you need to true.
 // ============================================================
 
 const LINECALL_DEBUG = false;
@@ -60,7 +59,7 @@ let remoteCandidatesQueue = [];
 let lastStats = null;
 
 // ============================================================
-// ICE SERVERS - KEEP STUN + TURN FOR DIFFERENT NETWORKS
+// ICE SERVERS
 // ============================================================
 
 let rtcConfig = {
@@ -109,10 +108,6 @@ function setStatus(message) {
     }
 }
 
-// Updates the green/amber/grey connection dot + the small
-// "Connected"/"Connecting..."/"Disconnected" text in the footer.
-// Defined by the inline script in index.html; safe to call even if
-// that script hasn't run yet (checked each time).
 function setConnectionIndicator(state) {
     if (typeof window.setConnectionState === "function") {
         window.setConnectionState(state);
@@ -131,7 +126,6 @@ async function initializeViewer() {
     }
 
     setConnectionIndicator("connecting");
-
     setStatus("Fetching TURN credentials...");
 
     await fetchTurnCredentials();
@@ -139,7 +133,6 @@ async function initializeViewer() {
     if (viewerRejected) return;
 
     setStatus(`Connecting to session: ${sessionId}`);
-
     connectSignaling();
 }
 
@@ -242,13 +235,12 @@ function connectSignaling() {
                     wlog("[WS] Pong received");
                     break;
 
-                // Line calls pushed by the server (no polling needed).
+                // New LineCall events pushed by the server.
                 case "line-call":
                     handlePushedLineCall(message.event, false);
                     break;
 
-                // The server's current latest event when we join or
-                // reconnect: remembered as "old", not shown.
+                // Existing latest event is remembered, not displayed.
                 case "line-call-latest":
                     handlePushedLineCall(message.event, true);
                     break;
@@ -316,8 +308,6 @@ async function createPeerConnection() {
                 }
 
                 startStatsMonitoring();
-
-                // Video is live -> start polling for line calls.
                 startLineCallPolling();
             })
             .catch((error) => {
@@ -328,9 +318,6 @@ async function createPeerConnection() {
                     setConnectionIndicator("connected");
                 }
 
-                // The WebRTC connection itself is still live even
-                // though autoplay was blocked, so line calls should
-                // keep coming in.
                 startLineCallPolling();
             });
     };
@@ -428,7 +415,6 @@ async function handleOffer(message) {
             })
         );
 
-        // Apply ICE candidates that arrived before the offer was ready.
         await flushRemoteCandidates();
 
         if (viewerRejected || !peerConnection) return;
@@ -454,7 +440,6 @@ async function handleOffer(message) {
         }));
 
         console.log("[WebRTC] Answer sent");
-
         setStatus("Answer sent. Connecting video...");
     } catch (error) {
         console.error("[WebRTC] Offer handling failed:", error);
@@ -481,15 +466,16 @@ async function handleRemoteCandidate(message) {
 
         if (!peerConnection.remoteDescription) {
             remoteCandidatesQueue.push(candidate);
+
             wlog(
                 "[ICE] Candidate queued:",
                 remoteCandidatesQueue.length
             );
+
             return;
         }
 
         await peerConnection.addIceCandidate(candidate);
-
         wlog("[ICE] Remote candidate added");
     } catch (error) {
         console.error("[ICE] Failed to add candidate:", error);
@@ -518,9 +504,7 @@ async function flushRemoteCandidates() {
 // ============================================================
 
 function stopPeerConnection() {
-    // Line calls only make sense while connected to the stream.
     stopLineCallPolling();
-
     stopStatsMonitoring();
 
     if (peerConnection) {
@@ -560,8 +544,6 @@ function updateFPS() {
     const now = performance.now();
     const elapsed = now - lastFPSCheck;
 
-    // Nothing is playing -> leave the "FPS: --" text alone and
-    // skip the DOM write.
     if (
         !videoElement.srcObject ||
         videoElement.paused
@@ -579,6 +561,7 @@ function updateFPS() {
 
     if (fpsElement) {
         const currentFPS = fps.toFixed(1);
+
         const targetStatus =
             fps >= TARGET_FPS - 0.5 ? "TARGET" : "BELOW TARGET";
 
@@ -650,7 +633,6 @@ if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) {
         "[Video] requestVideoFrameCallback unsupported; using fallback"
     );
 
-    // Fallback is approximate, not a reliable actual FPS measurement.
     let lastMediaTime = -1;
 
     videoElement.addEventListener("timeupdate", () => {
@@ -664,19 +646,14 @@ if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) {
     });
 }
 
-// Once a second is enough for the FPS text. (It used to run a
-// callback on every screen frame, ~60 times a second.)
 fpsIntervalId = setInterval(updateFPS, 1000);
 
 // ============================================================
-// WEBRTC STATS - RECEIVE FPS, DROPS, PACKET LOSS, RTT
+// WEBRTC STATS
 // ============================================================
 
 function startStatsMonitoring() {
-    // getStats() every second + two console logs per tick is
-    // debug-only work, skipped entirely unless WEBRTC_DEBUG is on.
     if (!WEBRTC_DEBUG) return;
-
     if (statsIntervalId !== null) return;
 
     statsIntervalId = setInterval(
@@ -851,23 +828,10 @@ async function logWebRTCStats() {
 }
 
 // ============================================================
-// LINE CALL API
-//
-// Polls the tracking backend for the latest line call event while
-// the viewer is connected, shows a big IN/OUT/UNCERTAIN badge on
-// the video, adds a replay card (if the event has a clip), and
-// plots the ball's landing spot on the 2D bounce map — but ONLY for
-// events whose type/categories say "bounce" (see isBounceEvent()).
-// Any other event type still shows the badge/replay, but is left
-// off the map.
+// LINE CALL CONFIGURATION
 // ============================================================
 
-// IMPORTANT: if this viewer page is served over HTTPS, this MUST be
-// an https:// URL too (browsers block http:// requests from an
-// https:// page = "mixed content"), and the API must allow this
-// page's origin via CORS.
-// TEST SWITCH: false = line call API is never hit (use this to check
-// whether polling is what drops the FPS). Set back to true afterwards.
+// Polling stays disabled; events arrive through the WebSocket push.
 const LINECALL_POLLING_ENABLED = false;
 
 const LINECALL_API_BASE =
@@ -878,15 +842,12 @@ if (
     LINECALL_API_BASE.startsWith("http://")
 ) {
     console.error(
-        "[LineCall] ❌ Viewer is on HTTPS but LINECALL_API_BASE is HTTP. " +
-        "The browser will block line call requests (mixed content). " +
-        "Serve the API over HTTPS."
+        "[LineCall] Viewer is HTTPS but LINECALL_API_BASE is HTTP. " +
+        "The browser will block these requests as mixed content."
     );
 }
 
 const LINECALL_SHOW_MS = 2000;
-// Pause between polls. 500ms is plenty for line calls and keeps
-// the page quiet (it was 200ms = ~5 requests every second).
 const LINECALL_MIN_GAP_MS = 500;
 const LINECALL_ERROR_RETRY_MS = 300;
 const LINECALL_REQUEST_TIMEOUT_MS = 5000;
@@ -912,31 +873,22 @@ const courtMapWrapElement =
 const courtMapEmptyElement =
     document.getElementById("courtMapEmpty");
 
-dlog(
-    "[LineCall] DOM elements found:",
-    {
-        lineCallElement: !!lineCallElement,
-        lineCallResultElement: !!lineCallResultElement,
-        lineCallDetailElement: !!lineCallDetailElement,
-        replaysListElement: !!replaysListElement,
-        replaysEmptyElement: !!replaysEmptyElement,
-        courtMapWrapElement: !!courtMapWrapElement,
-        courtMapEmptyElement: !!courtMapEmptyElement
-    }
-);
+dlog("[LineCall] DOM elements found:", {
+    lineCallElement: !!lineCallElement,
+    lineCallResultElement: !!lineCallResultElement,
+    lineCallDetailElement: !!lineCallDetailElement,
+    replaysListElement: !!replaysListElement,
+    replaysEmptyElement: !!replaysEmptyElement,
+    courtMapWrapElement: !!courtMapWrapElement,
+    courtMapEmptyElement: !!courtMapEmptyElement
+});
 
 let lastLineCallEventId = null;
 let lineCallFirstPoll = true;
 let lineCallHideTimer = null;
 
-// Not a session ID — just whether the polling loop is running.
 let lineCallLoopRunning = false;
-
-// Every startLineCallPolling() call gets a new loop ID; an older
-// loop still winding down notices it's stale and exits, so a quick
-// disconnect -> reconnect never runs two loops at once.
 let lineCallLoopId = 0;
-
 let activeLineCallController = null;
 let lineCallPollCount = 0;
 
@@ -951,9 +903,7 @@ function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Only https:// links are accepted for a clip, so a bad/odd API
-// value (e.g. "javascript:...") can never reach <video src> or
-// <a href>.
+// Only valid HTTPS URLs are allowed for replay.
 function getSafeClipUrl(rawUrl) {
     if (typeof rawUrl !== "string" || !rawUrl) {
         return null;
@@ -964,35 +914,39 @@ function getSafeClipUrl(rawUrl) {
 
         if (parsed.protocol !== "https:") {
             console.warn(
-                "[LineCall] Ignoring non-https clip url:",
+                "[LineCall] Ignoring non-HTTPS clip URL:",
                 rawUrl
             );
             return null;
         }
 
         return parsed.href;
-
     } catch (error) {
         console.warn(
-            "[LineCall] Ignoring invalid clip url:",
+            "[LineCall] Ignoring invalid clip URL:",
             rawUrl
         );
         return null;
     }
 }
 
-// An event counts as a "bounce" (and therefore gets plotted on the
-// 2D map) if its type is "bounce" or its categories list includes
-// "bounce". Everything else (badge + replay) still shows normally,
-// it's just left off the court map.
+// A bounce is identified by its type or categories.
 function isBounceEvent(event) {
-    if (event.type === "bounce") {
+    if (!event || typeof event !== "object") {
+        return false;
+    }
+
+    if (
+        String(event.type || "").toLowerCase() === "bounce"
+    ) {
         return true;
     }
 
     if (
         Array.isArray(event.categories) &&
-        event.categories.includes("bounce")
+        event.categories.some(
+            category => String(category).toLowerCase() === "bounce"
+        )
     ) {
         return true;
     }
@@ -1000,25 +954,35 @@ function isBounceEvent(event) {
     return false;
 }
 
+// A generic bounce must not display the UNCERTAIN badge.
+// The backend marks genuine LineCall notifications explicitly.
+function isDedicatedLineCallEvent(event) {
+    if (!event || typeof event !== "object") {
+        return false;
+    }
+
+    return (
+        event.linecall === true ||
+        event.is_linecall === true ||
+        String(event.event_kind || "").toLowerCase() === "linecall" ||
+        String(event.event_type || "").toLowerCase() === "linecall" ||
+        String(event.notification_type || "").toLowerCase() === "linecall"
+    );
+}
+
 function hideLineCall() {
     dlog("[LineCall] Hiding badge (timer expired).");
 
-    lineCallElement.classList.remove("show");
+    if (lineCallElement) {
+        lineCallElement.classList.remove("show");
+    }
 }
 
 // ============================================================
 // 2D BOUNCE MAP
-//
-// Every bounce stays on the map for the whole session (unlike the
-// badge above, which auto-hides). Court size comes from the
-// backend's court_dimensions (court_w_ft, court_h_ft, net_offset,
-// kitchen_ft) on the event itself, not a hardcoded size, and the
-// map rebuilds itself if those numbers ever change mid-session.
 // ============================================================
 
-const COURT_MAP_SCALE = 10; // SVG units per foot
-
-// Keeps the SVG light on very long sessions (oldest dots go first).
+const COURT_MAP_SCALE = 10;
 const MAX_MAP_DOTS = 300;
 
 const DEFAULT_COURT_DIMENSIONS = {
@@ -1046,12 +1010,14 @@ function dimensionsChanged(a, b) {
 }
 
 function buildCourtMap(dims) {
-    dlog(
-        "[CourtMap] Building court map with dimensions:",
-        dims
-    );
+    if (!courtMapWrapElement) {
+        console.warn("[CourtMap] Court map container not found.");
+        return;
+    }
 
-    courtMapDims = dims;
+    dlog("[CourtMap] Building court map:", dims);
+
+    courtMapDims = { ...dims };
 
     const w = dims.court_w_ft * COURT_MAP_SCALE;
     const h = dims.court_h_ft * COURT_MAP_SCALE;
@@ -1065,7 +1031,6 @@ function buildCourtMap(dims) {
         (dims.net_offset + dims.kitchen_ft) * COURT_MAP_SCALE;
 
     const centerX = w / 2;
-
     const svgNS = "http://www.w3.org/2000/svg";
 
     const svg = document.createElementNS(svgNS, "svg");
@@ -1095,17 +1060,13 @@ function buildCourtMap(dims) {
     svg.appendChild(outline);
 
     addLine("court-map-net", 0, netY, w, netY);
-
     addLine("court-map-kitchen", 0, kitchenTopY, w, kitchenTopY);
     addLine("court-map-kitchen", 0, kitchenBottomY, w, kitchenBottomY);
 
-    // No center line inside the kitchen itself, only net-to-kitchen
-    // on each side.
     addLine("court-map-center", centerX, 0, centerX, kitchenTopY);
     addLine("court-map-center", centerX, kitchenBottomY, centerX, h);
 
     const dotsGroup = document.createElementNS(svgNS, "g");
-
     dotsGroup.setAttribute("id", "courtMapDots");
 
     svg.appendChild(dotsGroup);
@@ -1124,20 +1085,25 @@ function addCourtMapDot(event, result) {
         !courtLocation ||
         typeof courtLocation.x !== "number" ||
         typeof courtLocation.y !== "number" ||
-        !isFinite(courtLocation.x) ||
-        !isFinite(courtLocation.y)
+        !Number.isFinite(courtLocation.x) ||
+        !Number.isFinite(courtLocation.y)
     ) {
         console.warn(
-            "[CourtMap] Event has no usable court_location, skipping dot.",
+            "[CourtMap] Bounce has no usable court_location; skipping map point.",
             event
         );
         return;
     }
 
-    const dims =
-        event.court_dimensions ||
-        courtMapDims ||
-        DEFAULT_COURT_DIMENSIONS;
+    const suppliedDims = event.court_dimensions;
+
+    const dims = suppliedDims &&
+        typeof suppliedDims.court_w_ft === "number" &&
+        typeof suppliedDims.court_h_ft === "number" &&
+        typeof suppliedDims.net_offset === "number" &&
+        typeof suppliedDims.kitchen_ft === "number"
+        ? suppliedDims
+        : (courtMapDims || DEFAULT_COURT_DIMENSIONS);
 
     if (
         !courtMapSvgElement ||
@@ -1146,8 +1112,10 @@ function addCourtMapDot(event, result) {
         buildCourtMap(dims);
     }
 
-    // A small margin outside the lines so an OUT ball is visibly
-    // outside instead of being squashed onto the edge.
+    if (!courtMapDotsGroup) {
+        return;
+    }
+
     const marginFt = 2.5;
 
     const clampedX = Math.max(
@@ -1164,7 +1132,6 @@ function addCourtMapDot(event, result) {
     const cy = clampedY * COURT_MAP_SCALE;
 
     const svgNS = "http://www.w3.org/2000/svg";
-
     const dot = document.createElementNS(svgNS, "circle");
 
     const dotClass =
@@ -1188,7 +1155,6 @@ function addCourtMapDot(event, result) {
     ].filter(Boolean);
 
     title.textContent = titleParts.join(" · ");
-
     dot.appendChild(title);
 
     courtMapDotsGroup.appendChild(dot);
@@ -1199,9 +1165,11 @@ function addCourtMapDot(event, result) {
 
     setTimeout(() => dot.classList.remove("new"), 600);
 
-    courtMapEmptyElement.style.display = "none";
+    if (courtMapEmptyElement) {
+        courtMapEmptyElement.style.display = "none";
+    }
 
-    dlog("[CourtMap] 🟢 Plotted bounce:", {
+    dlog("[CourtMap] Plotted bounce:", {
         x: courtLocation.x,
         y: courtLocation.y,
         result: dotClass
@@ -1213,13 +1181,6 @@ function addCourtMapDot(event, result) {
 // ============================================================
 
 const MAX_REPLAYS = 40;
-
-// "none": a new clip does NOT start downloading by itself. The clips
-// are .mov files, and downloading them while the live stream is
-// running steals bandwidth and makes the live video stutter every
-// time a line call arrives. A clip loads when you press play.
-// Use "metadata" if you want a thumbnail frame on every card
-// (costs bandwidth + decoder memory for each clip).
 const REPLAY_PRELOAD = "none";
 
 let totalCalls = 0;
@@ -1236,10 +1197,10 @@ async function downloadClip(clipUrl, button) {
             clipUrl.split("?")[0].split("/").pop() || fileName
         );
     } catch (error) {
-        // Keep the default file name.
+        // Use the fallback filename.
     }
 
-    dlog("[Replay] ⬇ Downloading clip:", clipUrl);
+    dlog("[Replay] Downloading clip:", clipUrl);
 
     button.classList.add("busy");
     button.textContent = "...";
@@ -1264,16 +1225,13 @@ async function downloadClip(clipUrl, button) {
         link.remove();
 
         setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
-
     } catch (error) {
-        // Usually CORS: the S3 bucket doesn't allow this origin.
         console.warn(
-            "[Replay] ⬇ fetch download failed, opening in new tab:",
+            "[Replay] Download failed; opening clip in a new tab:",
             error
         );
 
         window.open(clipUrl, "_blank", "noopener");
-
     } finally {
         button.classList.remove("busy");
         button.textContent = "⬇";
@@ -1281,7 +1239,12 @@ async function downloadClip(clipUrl, button) {
 }
 
 function addReplay(clipUrl, callNumber, result) {
-    dlog("[Replay] 🎬 Adding replay card:", callNumber, clipUrl);
+    if (!replaysListElement || !replaysEmptyElement) {
+        console.warn("[Replay] Replay container not found.");
+        return;
+    }
+
+    dlog("[Replay] Adding replay card:", callNumber, clipUrl);
 
     const card = document.createElement("div");
 
@@ -1301,7 +1264,7 @@ function addReplay(clipUrl, callNumber, result) {
 
     video.addEventListener("error", () => {
         console.warn(
-            "[Replay] Clip <video> errored (unsupported format?), showing link instead:",
+            "[Replay] Video playback failed; showing link instead:",
             clipUrl
         );
 
@@ -1317,11 +1280,9 @@ function addReplay(clipUrl, callNumber, result) {
     });
 
     const footer = document.createElement("div");
-
     footer.className = "replay-footer";
 
     const title = document.createElement("span");
-
     title.className = "replay-title";
     title.textContent = `Call #${callNumber}`;
 
@@ -1344,7 +1305,6 @@ function addReplay(clipUrl, callNumber, result) {
     card.appendChild(footer);
 
     replaysListElement.appendChild(card);
-
     replaysEmptyElement.style.display = "none";
 
     while (replaysListElement.children.length > MAX_REPLAYS) {
@@ -1352,38 +1312,73 @@ function addReplay(clipUrl, callNumber, result) {
     }
 }
 
+// ============================================================
+// EVENT DISPLAY LOGIC
+// ============================================================
+
 function showLineCall(event) {
-    dlog("[LineCall] 📣 Displaying event on screen:", event);
+    if (!event || typeof event !== "object") {
+        console.warn("[LineCall] Ignoring invalid event:", event);
+        return;
+    }
 
-    const rawResult =
-        String(event.in_out || "").toLowerCase();
+    dlog("[LineCall] Received event:", event);
 
-    const isUncertain =
-        !!event.confidence_level &&
-        event.confidence_level !== "high";
+    const rawResult = String(event.in_out || "").toLowerCase();
+    const confidence = String(event.confidence_level || "").toLowerCase();
 
-    const result = isUncertain ? "uncertain" : rawResult;
+    const isBounce = isBounceEvent(event);
+    const isDedicatedLineCall = isDedicatedLineCallEvent(event);
+    const isUncertain = !!confidence && confidence !== "high";
+    const clipUrl = getSafeClipUrl(event.url);
 
-    dlog("[LineCall] Result resolution:", {
-        rawResult,
-        confidence_level: event.confidence_level,
-        isUncertain,
-        result
-    });
+    // --------------------------------------------------------
+    // MAP: EVERY BOUNCE, regardless of URL or LineCall status.
+    // --------------------------------------------------------
 
-    lineCallElement.dataset.result =
-        ["in", "out", "uncertain"].includes(result) ? result : "";
+    if (isBounce) {
+        const mapResult = ["in", "out"].includes(rawResult)
+            ? rawResult
+            : (isUncertain ? "uncertain" : "out");
 
-    const labelText =
-        isUncertain
-            ? `UNCERTAIN ${rawResult.toUpperCase()}`
-            : (
-                rawResult
-                    ? rawResult.toUpperCase()
-                    : String(event.type || "EVENT").toUpperCase()
-            );
+        addCourtMapDot(event, mapResult);
+    }
 
-    lineCallResultElement.textContent = labelText;
+    // --------------------------------------------------------
+    // BADGE: dedicated LineCall + uncertain confidence + URL.
+    // Generic bounce events only update the map.
+    // --------------------------------------------------------
+
+    const shouldShowUncertain =
+        isDedicatedLineCall &&
+        isUncertain &&
+        !!clipUrl;
+
+    if (!shouldShowUncertain) {
+        dlog("[LineCall] Badge/replay suppressed:", {
+            event_id: event.event_id,
+            isBounce,
+            isDedicatedLineCall,
+            isUncertain,
+            hasClipUrl: !!clipUrl
+        });
+
+        return;
+    }
+
+    if (
+        !lineCallElement ||
+        !lineCallResultElement ||
+        !lineCallDetailElement
+    ) {
+        console.warn("[LineCall] Badge elements not found.");
+        return;
+    }
+
+    lineCallElement.dataset.result = "uncertain";
+
+    lineCallResultElement.textContent =
+        `UNCERTAIN ${rawResult.toUpperCase() || "BOUNCE"}`;
 
     const details = [];
 
@@ -1396,51 +1391,45 @@ function showLineCall(event) {
     }
 
     lineCallDetailElement.textContent = details.join(" · ");
-
     lineCallElement.classList.add("show");
 
     totalCalls++;
 
-    // Only plot BOUNCE events on the 2D map.
-    if (isBounceEvent(event)) {
-        addCourtMapDot(event, result);
-    } else {
-        dlog(
-            "[CourtMap] Skipping non-bounce event (type:",
-            event.type,
-            ", categories:",
-            event.categories,
-            ")"
-        );
-    }
-
-    const clipUrl = getSafeClipUrl(event.url);
-
-    if (clipUrl) {
-        addReplay(clipUrl, totalCalls, result);
+    // Replay only for a qualifying uncertain bounce.
+    if (
+        isBounce &&
+        String(event.type || "").toLowerCase() === "bounce"
+    ) {
+        addReplay(clipUrl, totalCalls, "uncertain");
     }
 
     clearTimeout(lineCallHideTimer);
 
     dlog(
-        "[LineCall] Badge will auto-hide after",
+        "[LineCall] UNCERTAIN badge will auto-hide after",
         LINECALL_SHOW_MS,
         "ms"
     );
 
-    lineCallHideTimer = setTimeout(hideLineCall, LINECALL_SHOW_MS);
+    lineCallHideTimer = setTimeout(
+        hideLineCall,
+        LINECALL_SHOW_MS
+    );
 }
+
+// ============================================================
+// OPTIONAL LINECALL API POLLING
+// ============================================================
 
 async function pollLineCallOnce(loopId) {
     if (!isLoopActive(loopId)) {
-        dlog("[LineCall] Skipping poll, loop is not active.");
+        dlog("[LineCall] Skipping poll; loop is inactive.");
         return;
     }
 
     lineCallPollCount++;
 
     const controller = new AbortController();
-
     activeLineCallController = controller;
 
     const timeout = setTimeout(
@@ -1466,16 +1455,12 @@ async function pollLineCallOnce(loopId) {
         );
 
         if (!isLoopActive(loopId)) {
-            dlog(
-                "[LineCall] Loop stopped while request was in flight, discarding response."
-            );
+            dlog("[LineCall] Loop stopped; discarding response.");
             return;
         }
 
         if (response.status === 404) {
-            dlog(
-                "[LineCall] 404 - no event available yet for this session."
-            );
+            dlog("[LineCall] No event available yet.");
             lineCallFirstPoll = false;
             return;
         }
@@ -1487,17 +1472,12 @@ async function pollLineCallOnce(loopId) {
         const data = await response.json();
 
         if (!isLoopActive(loopId)) {
-            dlog(
-                "[LineCall] Loop stopped while parsing JSON, discarding response."
-            );
+            dlog("[LineCall] Loop stopped while parsing; discarding response.");
             return;
         }
 
         dlog("[LineCall] Raw response:", data);
 
-        // The API sometimes returns 200 with a plain empty object
-        // ("{}") instead of a 404 when there's no event yet. Treat
-        // that the same as a 404 instead of warning every poll.
         const isEmptyObject =
             data &&
             typeof data === "object" &&
@@ -1505,9 +1485,6 @@ async function pollLineCallOnce(loopId) {
             Object.keys(data).length === 0;
 
         if (isEmptyObject) {
-            dlog(
-                "[LineCall] Empty {} response - no event yet for this session."
-            );
             lineCallFirstPoll = false;
             return;
         }
@@ -1519,9 +1496,7 @@ async function pollLineCallOnce(loopId) {
 
         if (!event || !event.event_id) {
             console.warn(
-                "[LineCall] No usable event_id found in response. " +
-                "Check the raw response logged above — the shape " +
-                "may not match what the code expects.",
+                "[LineCall] No usable event_id in API response:",
                 data
             );
 
@@ -1529,42 +1504,24 @@ async function pollLineCallOnce(loopId) {
             return;
         }
 
-        dlog(
-            "[LineCall] event_id from API:",
-            event.event_id,
-            "| last seen:",
-            lastLineCallEventId,
-            "| firstPoll:",
-            lineCallFirstPoll,
-            "| has clip url:",
-            !!event.url
-        );
-
         if (lineCallFirstPoll) {
             lineCallFirstPoll = false;
             lastLineCallEventId = event.event_id;
 
             dlog(
-                "[LineCall] Initial event remembered (not shown):",
+                "[LineCall] Initial event remembered, not displayed:",
                 event.event_id
             );
+
             return;
         }
 
         if (event.event_id !== lastLineCallEventId) {
             lastLineCallEventId = event.event_id;
 
-            console.log("[LineCall] 🟢 NEW EVENT DETECTED:", event);
-
+            console.log("[LineCall] NEW EVENT DETECTED:", event);
             showLineCall(event);
-
-        } else {
-            dlog(
-                "[LineCall] Same event as last poll, nothing new. event_id:",
-                event.event_id
-            );
         }
-
     } finally {
         clearTimeout(timeout);
 
@@ -1574,49 +1531,52 @@ async function pollLineCallOnce(loopId) {
     }
 }
 
-// ------------------------------------------------------------
-// PUSH MODE: the server sends line calls over the WebSocket.
-// ------------------------------------------------------------
+// ============================================================
+// PUSH MODE: SERVER -> WEBSOCKET -> VIEWER
+// ============================================================
+
 function handlePushedLineCall(event, isInitial) {
     if (!event || !event.event_id) {
-        console.warn("[LineCall] Pushed message had no event_id:", event);
+        console.warn("[LineCall] Pushed event has no event_id:", event);
         return;
     }
 
     if (isInitial) {
         lastLineCallEventId = event.event_id;
-        dlog("[LineCall] Latest event remembered (not shown):", event.event_id);
+
+        dlog(
+            "[LineCall] Latest event remembered, not displayed:",
+            event.event_id
+        );
+
         return;
     }
 
     if (event.event_id === lastLineCallEventId) {
-        dlog("[LineCall] Duplicate pushed event ignored:", event.event_id);
+        dlog("[LineCall] Duplicate event ignored:", event.event_id);
         return;
     }
 
     lastLineCallEventId = event.event_id;
 
-    console.log("[LineCall] 🟢 NEW EVENT (pushed):", event);
-
+    console.log("[LineCall] NEW EVENT (pushed):", event);
     showLineCall(event);
 }
 
+// ============================================================
+// POLLING START / STOP
+// ============================================================
+
 function startLineCallPolling() {
     if (!LINECALL_POLLING_ENABLED) {
-        console.log("[LineCall] Polling DISABLED for FPS test");
+        console.log("[LineCall] Polling disabled; using WebSocket push.");
         return;
     }
 
-    if (!sessionId) {
-        return;
-    }
+    if (!sessionId) return;
+    if (lineCallLoopRunning) return;
 
-    if (lineCallLoopRunning) {
-        dlog("[LineCall] Polling already running.");
-        return;
-    }
-
-    console.log("[LineCall] 🟢 Starting API polling");
+    console.log("[LineCall] Starting API polling");
     dlog("[LineCall] Session ID:", sessionId);
 
     dlog("[LineCall] Config:", {
@@ -1629,55 +1589,37 @@ function startLineCallPolling() {
 
     lineCallLoopRunning = true;
     lineCallPollCount = 0;
-
-    // On every new connection, the current latest event is treated
-    // as old; a genuinely newer event will still be shown.
     lineCallFirstPoll = true;
 
-    // New loop ID -> any older loop still winding down will exit.
     lineCallLoopId++;
-
     lineCallLoop(lineCallLoopId);
 }
 
 function stopLineCallPolling() {
     if (!lineCallLoopRunning) {
         if (activeLineCallController) {
-            dlog(
-                "[LineCall] Loop already stopped, but aborting a stray in-flight request."
-            );
             activeLineCallController.abort();
             activeLineCallController = null;
         }
+
         return;
     }
 
     console.log(
-        "[LineCall] 🔴 Stopping API polling (total polls made:",
-        lineCallPollCount,
-        ")"
+        "[LineCall] Stopping API polling. Polls:",
+        lineCallPollCount
     );
 
     lineCallLoopRunning = false;
 
     if (activeLineCallController) {
-        dlog("[LineCall] Aborting active API request...");
         activeLineCallController.abort();
         activeLineCallController = null;
     }
-
-    // NOTE: we deliberately do NOT clear/hide the line call badge
-    // here (replay cards and bounce-map dots are never removed). If
-    // the badge is currently showing, it stays on screen (and still
-    // auto-hides on its own normal timer from showLineCall) even
-    // though the stream disconnected.
-    dlog(
-        "[LineCall] Leaving any currently visible line call as-is."
-    );
 }
 
 async function lineCallLoop(myLoopId) {
-    dlog("[LineCall] Polling loop starting. Loop ID:", myLoopId);
+    dlog("[LineCall] Polling loop starting:", myLoopId);
 
     while (isLoopActive(myLoopId)) {
         try {
@@ -1690,29 +1632,14 @@ async function lineCallLoop(myLoopId) {
             if (LINECALL_MIN_GAP_MS > 0) {
                 await sleep(LINECALL_MIN_GAP_MS);
             }
-
         } catch (error) {
-
-            // AbortError fires in TWO different situations, and they
-            // must NOT be treated the same:
-            //
-            //   1) Disconnect -> stopLineCallPolling() calls
-            //      activeLineCallController.abort() AND sets
-            //      lineCallLoopRunning = false. Real stop, break.
-            //
-            //   2) Per-request timeout -> a single slow API
-            //      response, the loop is still active. NOT a
-            //      disconnect. Must keep polling.
             if (error && error.name === "AbortError") {
                 if (!isLoopActive(myLoopId)) {
-                    dlog("[LineCall] Request aborted (disconnect).");
                     break;
                 }
 
                 console.warn(
-                    "[LineCall] Request timed out (>",
-                    LINECALL_REQUEST_TIMEOUT_MS,
-                    "ms), retrying..."
+                    "[LineCall] Request timed out; retrying..."
                 );
 
                 await sleep(LINECALL_ERROR_RETRY_MS);
@@ -1729,12 +1656,7 @@ async function lineCallLoop(myLoopId) {
         }
     }
 
-    dlog(
-        "[LineCall] Polling loop stopped. Loop ID:",
-        myLoopId,
-        "| Total polls made:",
-        lineCallPollCount
-    );
+    dlog("[LineCall] Polling loop stopped:", myLoopId);
 }
 
 // ============================================================
