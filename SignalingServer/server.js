@@ -1,4 +1,3 @@
-
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -7,6 +6,36 @@ const os = require('os');
 
 const PORT = process.env.PORT || 8765;
 const WEB_ROOT = path.resolve(__dirname, 'WebViewer');
+
+// ============================================================
+// LINE CALL PUSH (backend -> this server -> viewers)
+//
+// The tracking backend POSTs each line call event here:
+//
+//   POST /linecall/<sessionId>
+//   Header:  x-api-key: <LINECALL_SECRET>
+//   Body:    the event JSON (must contain event_id)
+//
+// The server forwards it to every viewer of that session over the
+// WebSocket that is already open, so the viewer does not need to
+// poll anything.
+//
+// Set the secret on Fly:   fly secrets set LINECALL_SECRET=your-long-random-string
+// ============================================================
+
+const LINECALL_SECRET = process.env.LINECALL_SECRET || '';
+const LINECALL_MAX_BODY_BYTES = 256 * 1024;
+
+if (!LINECALL_SECRET) {
+  console.warn(
+    '[!] LINECALL_SECRET is not set. POST /linecall/... will be rejected (503) until you set it.'
+  );
+}
+
+// sessionId -> latest line call event (so a viewer who joins or
+// reconnects knows what the current "latest" is and does not
+// replay an old call).
+const lastLineCallEvents = new Map();
 
 // sessionId -> { producer: ws|null, viewers: Set<ws> }
 const sessions = new Map();
@@ -46,12 +75,151 @@ function getLocalIPs() {
   return results;
 }
 
+function sendJson(res, status, obj) {
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store'
+  });
+
+  res.end(JSON.stringify(obj));
+}
+
+// Constant-time-ish comparison so the key cannot be guessed by timing.
+function secretsMatch(a, b) {
+  const bufA = Buffer.from(String(a || ''));
+  const bufB = Buffer.from(String(b || ''));
+
+  if (bufA.length !== bufB.length) {
+    return false;
+  }
+
+  return require('crypto').timingSafeEqual(bufA, bufB);
+}
+
+function handleLineCallPost(req, res, sessionId) {
+  if (!LINECALL_SECRET) {
+    sendJson(res, 503, { ok: false, error: 'LINECALL_SECRET not configured on server' });
+    req.resume();
+    return;
+  }
+
+  if (!secretsMatch(req.headers['x-api-key'], LINECALL_SECRET)) {
+    sendJson(res, 401, { ok: false, error: 'Invalid API key' });
+    req.resume();
+    return;
+  }
+
+  let size = 0;
+  const chunks = [];
+  let aborted = false;
+
+  req.on('data', (chunk) => {
+    if (aborted) return;
+
+    size += chunk.length;
+
+    if (size > LINECALL_MAX_BODY_BYTES) {
+      aborted = true;
+      sendJson(res, 413, { ok: false, error: 'Body too large' });
+      req.destroy();
+      return;
+    }
+
+    chunks.push(chunk);
+  });
+
+  req.on('end', () => {
+    if (aborted) return;
+
+    let event;
+
+    try {
+      event = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: 'Body must be valid JSON' });
+      return;
+    }
+
+    if (!event || typeof event !== 'object' || Array.isArray(event)) {
+      sendJson(res, 400, { ok: false, error: 'Body must be a JSON object' });
+      return;
+    }
+
+    // Accept either the event itself or { event: {...} }.
+    if (!event.event_id && event.event && event.event.event_id) {
+      event = event.event;
+    }
+
+    if (!event.event_id) {
+      sendJson(res, 400, { ok: false, error: 'event_id is required' });
+      return;
+    }
+
+    lastLineCallEvents.set(sessionId, event);
+
+    const session = sessions.get(sessionId);
+    let delivered = 0;
+
+    if (session) {
+      session.viewers.forEach((viewer) => {
+        if (viewer.readyState === WebSocket.OPEN) {
+          safeSend(viewer, {
+            type: 'line-call',
+            sessionId,
+            event
+          });
+
+          delivered++;
+        }
+      });
+    }
+
+    console.log(
+      `[LineCall] "${sessionId}" event ${event.event_id} -> ${delivered} viewer(s)`
+    );
+
+    sendJson(res, 200, { ok: true, delivered });
+  });
+
+  req.on('error', () => {
+    if (!res.headersSent) {
+      sendJson(res, 400, { ok: false, error: 'Request error' });
+    }
+  });
+}
+
 // ============================================================
 // HTTP SERVER
 // ============================================================
 
 const httpServer = http.createServer((req, res) => {
   let requestPath = (req.url || '/').split('?')[0];
+
+  // ----------------------------------------------------------
+  // POST /linecall/<sessionId>
+  // ----------------------------------------------------------
+
+  const lineCallMatch = requestPath.match(/^\/linecall\/([^/]+)\/?$/);
+
+  if (lineCallMatch) {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { Allow: 'POST' });
+      res.end('Method Not Allowed');
+      return;
+    }
+
+    let sessionId;
+
+    try {
+      sessionId = decodeURIComponent(lineCallMatch[1]);
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: 'Bad session id' });
+      return;
+    }
+
+    handleLineCallPost(req, res, sessionId);
+    return;
+  }
 
   if (requestPath === '/' || requestPath === '/view') {
     requestPath = '/index.html';
@@ -265,6 +433,21 @@ wss.on('connection', (ws) => {
           clientId: ws.id
         });
 
+        // A viewer that joins (or reconnects) is told what the
+        // current latest line call is, so the viewer treats it as
+        // old and only shows genuinely newer ones.
+        if (msg.role === 'viewer') {
+          const latest = lastLineCallEvents.get(sessionId);
+
+          if (latest) {
+            safeSend(ws, {
+              type: 'line-call-latest',
+              sessionId,
+              event: latest
+            });
+          }
+        }
+
         break;
       }
 
@@ -397,6 +580,9 @@ wss.on('connection', (ws) => {
     if (!session.producer && session.viewers.size === 0) {
       sessions.delete(ws.sessionId);
 
+      // The next game on this session id starts fresh.
+      lastLineCallEvents.delete(ws.sessionId);
+
       console.log(
         `[i] Empty session removed: ${ws.sessionId}`
       );
@@ -422,6 +608,7 @@ httpServer.listen(PORT, '0.0.0.0', () => {
 
   console.log(`HTTP/Web Viewer: http://localhost:${PORT}`);
   console.log(`WebSocket:       ws://localhost:${PORT}`);
+  console.log(`Line call push:  POST http://localhost:${PORT}/linecall/<sessionId>`);
 
   console.log('');
   console.log('Reachable on LAN:');

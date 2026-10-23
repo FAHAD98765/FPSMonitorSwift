@@ -1,19 +1,41 @@
+// NOTE: named viewerParams (not params): index.html's inline script
+// already declares a global "params", and declaring it twice stops
+// this whole file from running.
 const viewerParams = new URLSearchParams(window.location.search);
-
 const sessionId =
     viewerParams.get("session") ||
-    viewerParams.get("sessionId") ||
-    "fpsmonitor-session";
+    viewerParams.get("sessionId");
 
-console.log(
-    "[Init] Page loaded. URL params:",
-    Object.fromEntries(viewerParams.entries())
-);
+// ============================================================
+// DEBUG FLAGS
+//
+// Both are OFF by default so the page stays smooth. Chrome
+// serialises every logged object (especially with DevTools open),
+// which keeps the main thread busy and competes with video
+// decode/render. Errors, warnings and new line-call events are
+// always logged, whatever these flags say.
+//
+//   LINECALL_DEBUG -> per-poll API logs, map / replay / badge details
+//   WEBRTC_DEBUG   -> signaling + ICE chatter, and the once-a-second
+//                     getStats() monitor
+//
+// To debug, change the one you need to true.
+// ============================================================
 
-console.log(
-    "[Init] Resolved sessionId:",
-    sessionId
-);
+const LINECALL_DEBUG = false;
+const WEBRTC_DEBUG = false;
+
+function dlog(...args) {
+    if (LINECALL_DEBUG) {
+        console.log(...args);
+    }
+}
+
+function wlog(...args) {
+    if (WEBRTC_DEBUG) {
+        console.log(...args);
+    }
+}
 
 const statusElement = document.getElementById("status");
 const videoElement = document.getElementById("remoteVideo");
@@ -22,153 +44,56 @@ const fpsElement = document.getElementById("fps");
 let socket = null;
 let peerConnection = null;
 let producerId = null;
+let viewerRejected = false;
 
-// Set to true when the page is closing so the WebSocket
-// auto-reconnect doesn't kick in.
-let pageUnloading = false;
-
-// ============================================================
-// ICE CANDIDATE QUEUE
-// ============================================================
-
-let pendingIceCandidates = [];
-
-// ============================================================
-// FPS
-// ============================================================
+const TARGET_FPS = 25;
+const STATS_INTERVAL_MS = 1000;
 
 let renderedFrames = 0;
 let lastFPSCheck = performance.now();
 
+let fpsIntervalId = null;
+let videoFrameCallbackId = null;
+let statsIntervalId = null;
+
+let remoteCandidatesQueue = [];
+let lastStats = null;
+
 // ============================================================
-// WEBRTC CONFIG - STUN + TURN
+// ICE SERVERS - KEEP STUN + TURN FOR DIFFERENT NETWORKS
 // ============================================================
 
 let rtcConfig = {
     iceServers: [
-        {
-            urls: "stun:stun.l.google.com:19302"
-        }
+        { urls: "stun:stun.l.google.com:19302" }
     ]
 };
 
-// ============================================================
-// TURN - METERED
-//
-// NOTE: this API key is visible to anyone who opens the page.
-// In the Metered dashboard, restrict it to your domain(s) or
-// rotate it.
-// ============================================================
-
 async function fetchTurnCredentials() {
     try {
-        console.log("[ICE] 🔄 Fetching TURN credentials from Metered...");
-
         const response = await fetch(
             "https://fpsmonitor-turn.metered.live/api/v1/turn/credentials?apiKey=64926152b434b88fcdf288be2869c08e12a1"
         );
 
-        console.log("[ICE] API Response Status:", response.status);
-
         if (!response.ok) {
-            throw new Error(`API returned ${response.status}`);
+            throw new Error(`TURN request failed: ${response.status}`);
         }
 
         const turnServers = await response.json();
 
-        console.log(
-            "[ICE] TURN Servers Received:",
-            turnServers
-        );
-
-        if (
-            Array.isArray(turnServers) &&
-            turnServers.length > 0
-        ) {
+        if (Array.isArray(turnServers) && turnServers.length > 0) {
             rtcConfig.iceServers = [
-                {
-                    urls: "stun:stun.l.google.com:19302"
-                },
+                { urls: "stun:stun.l.google.com:19302" },
                 ...turnServers
             ];
 
-            console.log(
-                "[ICE] ✅ Metered TURN Loaded! Config:",
-                rtcConfig.iceServers
-            );
-
-            return true;
+            console.log("[ICE] TURN servers loaded");
+        } else {
+            console.warn("[ICE] No TURN servers returned");
         }
-
-        console.warn(
-            "[ICE] ⚠️ No TURN servers returned"
-        );
-
-        return false;
-
     } catch (error) {
-
-        console.error(
-            "[ICE] ❌ Metered TURN Fetch Failed:",
-            error
-        );
-
-        return false;
-    }
-}
-
-// ============================================================
-// FALLBACK TURN
-// ============================================================
-
-function useFallbackTurn() {
-
-    console.log(
-        "[ICE] 🔄 Switching to fallback OpenRelay TURN..."
-    );
-
-    rtcConfig.iceServers = [
-        {
-            urls: "stun:stun.l.google.com:19302"
-        },
-        {
-            urls: "turn:openrelay.metered.ca:443?transport=tcp",
-            username: "openrelayproject",
-            credential: "openrelayproject"
-        },
-        {
-            urls: "turn:openrelay.metered.ca:443?transport=udp",
-            username: "openrelayproject",
-            credential: "openrelayproject"
-        }
-    ];
-
-    console.log(
-        "[ICE] ✅ Fallback TURN Active! Config:",
-        rtcConfig.iceServers
-    );
-}
-
-// ============================================================
-// INITIALIZE TURN
-// ============================================================
-
-async function initializeTurn() {
-
-    console.log(
-        "[ICE] Starting TURN initialization..."
-    );
-
-    const success =
-        await fetchTurnCredentials();
-
-    if (!success) {
-
-        console.warn(
-            "[ICE] Metered failed, using OpenRelay fallback"
-        );
-
-        useFallbackTurn();
+        console.error("[ICE] Failed to fetch TURN credentials:", error);
+        console.log("[ICE] Continuing with STUN only");
     }
 }
 
@@ -177,444 +102,186 @@ async function initializeTurn() {
 // ============================================================
 
 function setStatus(message) {
+    console.log("[WebViewer]", message);
 
-    statusElement.textContent = message;
-
-    console.log(
-        "[WebViewer]",
-        message
-    );
+    if (statusElement) {
+        statusElement.textContent = message;
+    }
 }
 
-// ============================================================
-// CONNECTION UI
-//
-// connected    -> green
-// disconnected -> red
-// connecting   -> amber
-// ============================================================
-
-let uiConnectionState = "connecting";
-
-function updateConnectionUI(state) {
-
-    console.log(
-        "[UI] Connection state change:",
-        uiConnectionState,
-        "->",
-        state
-    );
-
-    uiConnectionState = state;
-
-    if (
-        typeof window.setConnectionState === "function"
-    ) {
+// Updates the green/amber/grey connection dot + the small
+// "Connected"/"Connecting..."/"Disconnected" text in the footer.
+// Defined by the inline script in index.html; safe to call even if
+// that script hasn't run yet (checked each time).
+function setConnectionIndicator(state) {
+    if (typeof window.setConnectionState === "function") {
         window.setConnectionState(state);
-    } else {
-        console.warn(
-            "[UI] window.setConnectionState is not defined (index.html script missing?)"
-        );
-    }
-
-    if (state !== "connected") {
-
-        fpsElement.textContent = "FPS: --";
     }
 }
 
 // ============================================================
-// TAP VIDEO TO START PLAYBACK
-// (used when the browser blocked autoplay)
+// INITIALIZATION
 // ============================================================
 
-videoElement.addEventListener(
-    "click",
-    () => {
-
-        if (!videoElement.srcObject) {
-            return;
-        }
-
-        videoElement
-            .play()
-            .then(() => {
-
-                if (uiConnectionState === "connected") {
-                    setStatus("LIVE");
-                }
-            })
-            .catch((error) => {
-
-                console.warn(
-                    "[Video] Manual play failed:",
-                    error
-                );
-            });
-    }
-);
-
-// ============================================================
-// START
-// ============================================================
-
-async function start() {
-
+async function initializeViewer() {
     if (!sessionId) {
-
-        setStatus(
-            "Missing session ID"
-        );
-
-        updateConnectionUI(
-            "disconnected"
-        );
-
+        setStatus("Missing session ID");
+        setConnectionIndicator("disconnected");
         return;
     }
 
-    console.log(
-        "[Session] Using Session ID:",
-        sessionId
-    );
+    setConnectionIndicator("connecting");
 
-    updateConnectionUI(
-        "connecting"
-    );
+    setStatus("Fetching TURN credentials...");
 
-    setStatus(
-        "Initializing TURN..."
-    );
+    await fetchTurnCredentials();
 
-    await initializeTurn();
+    if (viewerRejected) return;
 
-    setStatus(
-        `Connecting to session: ${sessionId}`
-    );
+    setStatus(`Connecting to session: ${sessionId}`);
 
     connectSignaling();
 }
 
-start();
+initializeViewer();
 
 // ============================================================
-// WEBSOCKET SIGNALING
-//
-// Auto-reconnects with backoff (1s, 2s, 4s ... max 10s) and sends
-// a ping every 25s so idle proxies don't drop the connection.
+// SIGNALING SERVER
 // ============================================================
-
-const WS_PING_INTERVAL_MS = 25000;
-const WS_RECONNECT_BASE_MS = 1000;
-const WS_RECONNECT_MAX_MS = 10000;
-
-let wsReconnectAttempts = 0;
-let wsReconnectTimer = null;
-let wsPingTimer = null;
-
-function stopWsPing() {
-
-    if (wsPingTimer) {
-
-        clearInterval(wsPingTimer);
-
-        wsPingTimer = null;
-    }
-}
-
-function startWsPing(ws) {
-
-    stopWsPing();
-
-    wsPingTimer = setInterval(
-        () => {
-
-            if (
-                ws.readyState === WebSocket.OPEN
-            ) {
-
-                ws.send(
-                    JSON.stringify({
-                        type: "ping"
-                    })
-                );
-            }
-        },
-        WS_PING_INTERVAL_MS
-    );
-}
-
-function scheduleSignalingReconnect() {
-
-    if (
-        pageUnloading ||
-        wsReconnectTimer
-    ) {
-        return;
-    }
-
-    const delay =
-        Math.min(
-            WS_RECONNECT_BASE_MS *
-                Math.pow(2, wsReconnectAttempts),
-            WS_RECONNECT_MAX_MS
-        );
-
-    wsReconnectAttempts++;
-
-    console.log(
-        `[WS] Reconnecting in ${delay}ms (attempt ${wsReconnectAttempts})`
-    );
-
-    wsReconnectTimer =
-        setTimeout(
-            () => {
-
-                wsReconnectTimer = null;
-
-                connectSignaling();
-            },
-            delay
-        );
-}
 
 function connectSignaling() {
-
     const protocol =
-        window.location.protocol === "https:"
-            ? "wss:"
-            : "ws:";
+        window.location.protocol === "https:" ? "wss:" : "ws:";
 
-    const wsURL =
-        `${protocol}//${window.location.host}`;
+    const wsURL = `${protocol}//${window.location.host}/ws`;
 
-    console.log(
-        "[WS] Connecting:",
-        wsURL
-    );
+    console.log("[WS] Connecting to:", wsURL);
 
-    const ws = new WebSocket(wsURL);
+    socket = new WebSocket(wsURL);
 
-    socket = ws;
+    socket.onopen = () => {
+        console.log("[WS] Connected");
 
-    ws.onopen = () => {
-
-        if (socket !== ws) {
+        if (viewerRejected) {
+            socket.close();
             return;
         }
 
-        console.log(
-            "[WS] Connected"
-        );
+        socket.send(JSON.stringify({
+            type: "register",
+            sessionId,
+            role: "viewer"
+        }));
 
-        wsReconnectAttempts = 0;
-
-        startWsPing(ws);
-
-        ws.send(
-            JSON.stringify({
-                type: "register",
-                sessionId: sessionId,
-                role: "viewer"
-            })
-        );
-
-        console.log(
-            "[WS] Sent register message for sessionId:",
-            sessionId
-        );
-
-        // Don't overwrite a live video status.
-        if (
-            !peerConnection ||
-            peerConnection.connectionState !== "connected"
-        ) {
-
-            setStatus(
-                "Connected to signaling server. Waiting for host..."
-            );
-        }
+        setStatus("Connected. Waiting for producer...");
     };
 
-    ws.onmessage = async (event) => {
-
-        if (socket !== ws) {
-            return;
-        }
-
+    socket.onmessage = async (event) => {
         try {
+            const message = JSON.parse(event.data);
 
-            const message =
-                JSON.parse(event.data);
-
-            console.log(
-                "[WS] Message:",
-                message.type,
-                message
-            );
+            wlog("[WS] Message:", message.type);
 
             switch (message.type) {
-
                 case "registered":
-
-                    console.log(
-                        "[WS] Registered as viewer:",
-                        message.clientId
-                    );
-
+                    setStatus("Connected. Waiting for producer...");
                     break;
 
                 case "producer-available":
-
-                    console.log(
-                        "[WS] Host/producer is available."
-                    );
-
-                    updateConnectionUI(
-                        "connecting"
-                    );
-
-                    setStatus(
-                        "Host available. Waiting for video..."
-                    );
-
+                    setStatus("Producer available. Waiting for video...");
                     break;
 
                 case "offer":
-
-                    console.log(
-                        "[WS] Received offer from host, handling..."
-                    );
-
-                    await handleOffer(
-                        message
-                    );
-
+                    if (viewerRejected) return;
+                    await handleOffer(message);
                     break;
 
                 case "ice-candidate":
-
-                    await handleRemoteCandidate(
-                        message
-                    );
-
+                    if (viewerRejected) return;
+                    await handleRemoteCandidate(message);
                     break;
 
                 case "producer-left":
-
-                    console.log(
-                        "[WS] Host/producer left the session."
-                    );
+                    console.log("[WS] Producer disconnected");
 
                     stopPeerConnection();
-
-                    updateConnectionUI(
-                        "disconnected"
-                    );
-
-                    setStatus(
-                        "Host disconnected"
-                    );
-
+                    setStatus("Host disconnected");
+                    setConnectionIndicator("disconnected");
                     break;
 
-                case "error":
+                case "error": {
+                    console.error("[WS] Server error:", message.message);
 
-                    console.error(
-                        "[WS] Server sent an error message:",
-                        message.message
-                    );
+                    const errorMessage = message.message || "";
 
-                    setStatus(
-                        `Server error: ${message.message}`
-                    );
+                    if (
+                        errorMessage ===
+                        "Stream is busy. Another viewer is already connected."
+                    ) {
+                        viewerRejected = true;
+
+                        stopPeerConnection();
+
+                        setStatus(
+                            "Stream is busy. Another user is already connected."
+                        );
+
+                        setConnectionIndicator("disconnected");
+
+                        if (socket && socket.readyState === WebSocket.OPEN) {
+                            socket.close(4003, "Viewer limit reached");
+                        }
+                    } else {
+                        setStatus(`Server error: ${errorMessage}`);
+                    }
 
                     break;
+                }
 
                 case "pong":
+                    wlog("[WS] Pong received");
+                    break;
 
+                // Line calls pushed by the server (no polling needed).
+                case "line-call":
+                    handlePushedLineCall(message.event, false);
+                    break;
+
+                // The server's current latest event when we join or
+                // reconnect: remembered as "old", not shown.
+                case "line-call-latest":
+                    handlePushedLineCall(message.event, true);
                     break;
 
                 default:
-
-                    console.log(
-                        "[WS] Unknown message:",
-                        message
-                    );
+                    console.log("[WS] Unknown message:", message);
+                    break;
             }
-
         } catch (error) {
-
-            console.error(
-                "[WS] Message handling error:",
-                error
-            );
+            console.error("[WS] Message parsing error:", error);
         }
     };
 
-    ws.onerror = (error) => {
+    socket.onerror = (error) => {
+        console.error("[WS] Error:", error);
 
-        if (socket !== ws) {
-            return;
+        if (!viewerRejected) {
+            setStatus("WebSocket connection error");
+            setConnectionIndicator("disconnected");
         }
-
-        console.error(
-            "[WS] Error:",
-            error
-        );
-
-        if (
-            !peerConnection ||
-            peerConnection.connectionState !== "connected"
-        ) {
-
-            updateConnectionUI(
-                "disconnected"
-            );
-
-            // IMPORTANT:
-            // Stop API polling when connection is lost.
-            stopLineCallPolling();
-        }
-
-        setStatus(
-            "WebSocket connection error"
-        );
     };
 
-    ws.onclose = () => {
+    socket.onclose = (event) => {
+        console.log("[WS] Disconnected", {
+            code: event.code,
+            reason: event.reason
+        });
 
-        if (socket !== ws) {
-            return;
-        }
+        stopPeerConnection();
 
-        console.log(
-            "[WS] Disconnected"
-        );
-
-        stopWsPing();
-
-        if (
-            !peerConnection ||
-            peerConnection.connectionState !== "connected"
-        ) {
-
-            updateConnectionUI(
-                "disconnected"
-            );
-
-            // IMPORTANT:
-            // Stop API polling when connection is lost.
-            stopLineCallPolling();
-        }
-
-        if (!pageUnloading) {
-
-            setStatus(
-                "Signaling server disconnected. Reconnecting..."
-            );
-
-            scheduleSignalingReconnect();
+        if (!viewerRejected) {
+            setStatus("Signaling server disconnected");
+            setConnectionIndicator("disconnected");
         }
     };
 }
@@ -624,399 +291,118 @@ function connectSignaling() {
 // ============================================================
 
 async function createPeerConnection() {
+    stopPeerConnection();
 
-    console.log(
-        "[WebRTC] Creating PeerConnection with config:",
-        rtcConfig
-    );
-
-    if (peerConnection) {
-
-        console.log(
-            "[WebRTC] Closing previous PeerConnection"
-        );
-
-        peerConnection.close();
-    }
-
-    peerConnection =
-        new RTCPeerConnection(
-            rtcConfig
-        );
-
-    // --------------------------------------------------------
-    // REMOTE TRACK
-    // --------------------------------------------------------
+    peerConnection = new RTCPeerConnection(rtcConfig);
 
     peerConnection.ontrack = (event) => {
+        if (viewerRejected || !peerConnection) return;
 
-        console.log(
-            "[WebRTC] Remote track received:",
-            event.track.kind
-        );
+        console.log("[WebRTC] Remote track received");
 
-        if (
-            event.streams &&
-            event.streams.length > 0
-        ) {
-
-            videoElement.srcObject =
-                event.streams[0];
-
+        if (event.streams && event.streams.length > 0) {
+            videoElement.srcObject = event.streams[0];
         } else {
-
-            const stream =
-                new MediaStream([
-                    event.track
-                ]);
-
-            videoElement.srcObject =
-                stream;
+            videoElement.srcObject = new MediaStream([event.track]);
         }
 
-        videoElement
-            .play()
+        videoElement.play()
             .then(() => {
+                console.log("[Video] Playback started");
 
-                console.log(
-                    "[Video] Playback started"
-                );
+                if (!viewerRejected) {
+                    setStatus("LIVE");
+                    setConnectionIndicator("connected");
+                }
 
-                updateConnectionUI(
-                    "connected"
-                );
+                startStatsMonitoring();
 
-                setStatus(
-                    "LIVE"
-                );
-
-                // ====================================================
-                // IMPORTANT:
-                // User/Host connected -> START API POLLING
-                // ====================================================
-
+                // Video is live -> start polling for line calls.
                 startLineCallPolling();
-
             })
             .catch((error) => {
+                console.warn("[Video] Playback could not start:", error);
 
-                console.warn(
-                    "[Video] Autoplay prevented:",
-                    error
-                );
+                if (!viewerRejected) {
+                    setStatus("Tap the video to start playback");
+                    setConnectionIndicator("connected");
+                }
 
-                updateConnectionUI(
-                    "connected"
-                );
-
-                setStatus(
-                    "Tap the video to start playback"
-                );
-
-                // Start API polling because WebRTC is connected.
+                // The WebRTC connection itself is still live even
+                // though autoplay was blocked, so line calls should
+                // keep coming in.
                 startLineCallPolling();
             });
     };
 
-    // --------------------------------------------------------
-    // LOCAL ICE CANDIDATE
-    // --------------------------------------------------------
-
     peerConnection.onicecandidate = (event) => {
-
-        if (!event.candidate) {
-
-            console.log(
-                "[ICE] Candidate gathering completed"
-            );
-
-            return;
-        }
-
-        console.log(
-            "[ICE] Local candidate:",
-            event.candidate.candidate
-        );
-
         if (
+            !event.candidate ||
             !socket ||
-            socket.readyState !== WebSocket.OPEN
+            socket.readyState !== WebSocket.OPEN ||
+            viewerRejected
         ) {
-
-            console.warn(
-                "[ICE] WebSocket not ready; local candidate cannot be sent"
-            );
-
             return;
         }
 
-        socket.send(
-            JSON.stringify({
-                type: "ice-candidate",
-                sessionId: sessionId,
-                targetId: producerId,
-
-                sdpMLineIndex:
-                    event.candidate.sdpMLineIndex,
-
-                sdpMid:
-                    event.candidate.sdpMid,
-
-                candidate:
-                    event.candidate.candidate
-            })
-        );
+        socket.send(JSON.stringify({
+            type: "ice-candidate",
+            sessionId,
+            targetId: producerId,
+            sdpMLineIndex: event.candidate.sdpMLineIndex,
+            sdpMid: event.candidate.sdpMid,
+            candidate: event.candidate.candidate
+        }));
     };
-
-    // --------------------------------------------------------
-    // ICE GATHERING STATE
-    // --------------------------------------------------------
-
-    peerConnection.onicegatheringstatechange = () => {
-
-        console.log(
-            "[ICE] Gathering state:",
-            peerConnection.iceGatheringState
-        );
-    };
-
-    // --------------------------------------------------------
-    // ICE CONNECTION STATE
-    // --------------------------------------------------------
-
-    peerConnection.oniceconnectionstatechange = () => {
-
-        console.log(
-            "[ICE] Connection state:",
-            peerConnection.iceConnectionState
-        );
-
-        switch (
-            peerConnection.iceConnectionState
-        ) {
-
-            case "new":
-
-                updateConnectionUI(
-                    "connecting"
-                );
-
-                setStatus(
-                    "Preparing video connection..."
-                );
-
-                break;
-
-            case "checking":
-
-                updateConnectionUI(
-                    "connecting"
-                );
-
-                setStatus(
-                    "Connecting video..."
-                );
-
-                break;
-
-            case "connected":
-
-                updateConnectionUI(
-                    "connected"
-                );
-
-                setStatus(
-                    "LIVE"
-                );
-
-                // ====================================================
-                // IMPORTANT:
-                // WebRTC connected -> START API
-                // ====================================================
-
-                startLineCallPolling();
-
-                break;
-
-            case "completed":
-
-                updateConnectionUI(
-                    "connected"
-                );
-
-                setStatus(
-                    "LIVE"
-                );
-
-                startLineCallPolling();
-
-                break;
-
-            case "disconnected":
-
-                updateConnectionUI(
-                    "disconnected"
-                );
-
-                setStatus(
-                    "Video connection disconnected"
-                );
-
-                // ====================================================
-                // IMPORTANT:
-                // WebRTC disconnected -> STOP API
-                // ====================================================
-
-                stopLineCallPolling();
-
-                break;
-
-            case "failed":
-
-                updateConnectionUI(
-                    "disconnected"
-                );
-
-                setStatus(
-                    "❌ WebRTC connection failed - Check console for details"
-                );
-
-                // Stop API polling.
-                stopLineCallPolling();
-
-                break;
-
-            case "closed":
-
-                updateConnectionUI(
-                    "disconnected"
-                );
-
-                setStatus(
-                    "Video connection closed"
-                );
-
-                // Stop API polling.
-                stopLineCallPolling();
-
-                break;
-        }
-    };
-
-    // --------------------------------------------------------
-    // CONNECTION STATE
-    // --------------------------------------------------------
 
     peerConnection.onconnectionstatechange = () => {
+        if (!peerConnection || viewerRejected) return;
 
-        console.log(
-            "[WebRTC] Connection state:",
-            peerConnection.connectionState
-        );
+        const state = peerConnection.connectionState;
 
-        switch (
-            peerConnection.connectionState
-        ) {
+        console.log("[WebRTC] Connection state:", state);
 
+        switch (state) {
             case "connected":
-
-                updateConnectionUI(
-                    "connected"
-                );
-
-                setStatus(
-                    "LIVE"
-                );
-
-                // ====================================================
-                // IMPORTANT:
-                // USER CONNECTED -> API START
-                // ====================================================
-
+                setStatus("LIVE");
+                setConnectionIndicator("connected");
+                startStatsMonitoring();
                 startLineCallPolling();
-
                 break;
 
             case "connecting":
-
-                updateConnectionUI(
-                    "connecting"
-                );
-
-                setStatus(
-                    "Connecting video..."
-                );
-
+                setStatus("Connecting video...");
+                setConnectionIndicator("connecting");
                 break;
 
             case "disconnected":
-
-                updateConnectionUI(
-                    "disconnected"
-                );
-
-                setStatus(
-                    "Video connection disconnected"
-                );
-
-                // ====================================================
-                // IMPORTANT:
-                // USER DISCONNECTED -> API STOP
-                // ====================================================
-
+                setStatus("Video connection disconnected");
+                setConnectionIndicator("disconnected");
                 stopLineCallPolling();
-
                 break;
 
             case "failed":
-
-                updateConnectionUI(
-                    "disconnected"
-                );
-
-                setStatus(
-                    "❌ Connection failed"
-                );
-
-                // Stop API polling.
+                setStatus("WebRTC connection failed");
+                setConnectionIndicator("disconnected");
                 stopLineCallPolling();
-
                 break;
 
             case "closed":
-
-                updateConnectionUI(
-                    "disconnected"
-                );
-
-                setStatus(
-                    "Video connection closed"
-                );
-
-                // Stop API polling.
+                setStatus("Video connection closed");
+                setConnectionIndicator("disconnected");
                 stopLineCallPolling();
-
                 break;
         }
     };
 
-    // --------------------------------------------------------
-    // SIGNALING STATE
-    // --------------------------------------------------------
+    peerConnection.oniceconnectionstatechange = () => {
+        if (!peerConnection) return;
 
-    peerConnection.onsignalingstatechange = () => {
-
-        console.log(
-            "[WebRTC] Signaling state:",
-            peerConnection.signalingState
+        wlog(
+            "[WebRTC] ICE state:",
+            peerConnection.iceConnectionState
         );
     };
-
-    // --------------------------------------------------------
-    // FLUSH QUEUED ICE CANDIDATES
-    // --------------------------------------------------------
-
-    await flushPendingIceCandidates();
 }
 
 // ============================================================
@@ -1024,31 +410,16 @@ async function createPeerConnection() {
 // ============================================================
 
 async function handleOffer(message) {
-
     try {
+        if (viewerRejected) return;
 
-        producerId =
-            message.fromId;
+        producerId = message.fromId;
 
-        console.log(
-            "[WebRTC] Offer received from Host:",
-            producerId
-        );
-
-        updateConnectionUI(
-            "connecting"
-        );
-
-        // NOTE: pendingIceCandidates is intentionally NOT cleared
-        // here. The host may send ICE candidates right after the
-        // offer, and clearing would drop ones that already arrived.
-        // It is cleared in stopPeerConnection() instead.
+        console.log("[WebRTC] Offer from producer:", producerId);
 
         await createPeerConnection();
 
-        console.log(
-            "[WebRTC] Setting remote description"
-        );
+        if (!peerConnection || viewerRejected) return;
 
         await peerConnection.setRemoteDescription(
             new RTCSessionDescription({
@@ -1057,345 +428,448 @@ async function handleOffer(message) {
             })
         );
 
-        console.log(
-            "[WebRTC] Remote description set"
-        );
+        // Apply ICE candidates that arrived before the offer was ready.
+        await flushRemoteCandidates();
 
-        await flushPendingIceCandidates();
+        if (viewerRejected || !peerConnection) return;
 
-        console.log(
-            "[WebRTC] Creating answer"
-        );
+        const answer = await peerConnection.createAnswer();
 
-        const answer =
-            await peerConnection.createAnswer();
-
-        await peerConnection.setLocalDescription(
-            answer
-        );
-
-        console.log(
-            "[WebRTC] Local description set"
-        );
+        await peerConnection.setLocalDescription(answer);
 
         if (
-            socket &&
-            socket.readyState === WebSocket.OPEN
+            viewerRejected ||
+            !socket ||
+            socket.readyState !== WebSocket.OPEN
         ) {
-
-            socket.send(
-                JSON.stringify({
-                    type: "answer",
-                    sessionId: sessionId,
-                    targetId: producerId,
-                    sdp: answer.sdp
-                })
-            );
-
-            console.log(
-                "[WebRTC] Answer sent to producer"
-            );
-
-            setStatus(
-                "Answer sent. Connecting video..."
-            );
-
-        } else {
-
-            console.error(
-                "[WebRTC] WebSocket is not connected"
-            );
-
-            updateConnectionUI(
-                "disconnected"
-            );
-
-            setStatus(
-                "Signaling connection lost"
-            );
-
-            stopLineCallPolling();
-        }
-
-    } catch (error) {
-
-        console.error(
-            "[WebRTC] Offer handling failed:",
-            error
-        );
-
-        updateConnectionUI(
-            "disconnected"
-        );
-
-        setStatus(
-            "Failed to establish WebRTC connection"
-        );
-
-        stopLineCallPolling();
-    }
-}
-
-// ============================================================
-// HANDLE REMOTE ICE CANDIDATE
-// ============================================================
-
-async function handleRemoteCandidate(message) {
-
-    try {
-
-        console.log(
-            "[ICE] Remote candidate received:",
-            message.candidate
-        );
-
-        const candidate =
-            new RTCIceCandidate({
-                candidate:
-                    message.candidate,
-
-                sdpMid:
-                    message.sdpMid,
-
-                sdpMLineIndex:
-                    message.sdpMLineIndex
-            });
-
-        // ----------------------------------------------------
-        // If PeerConnection or remote description isn't ready,
-        // queue the candidate.
-        // ----------------------------------------------------
-
-        if (
-            !peerConnection ||
-            !peerConnection.remoteDescription
-        ) {
-
-            console.log(
-                "[ICE] PeerConnection/remote description not ready."
-            );
-
-            console.log(
-                "[ICE] Queueing remote candidate."
-            );
-
-            pendingIceCandidates.push(
-                candidate
-            );
-
+            setStatus("Signaling connection lost");
             return;
         }
 
-        await peerConnection.addIceCandidate(
-            candidate
-        );
+        socket.send(JSON.stringify({
+            type: "answer",
+            sessionId,
+            targetId: producerId,
+            sdp: answer.sdp
+        }));
 
-        console.log(
-            "[ICE] Remote candidate added successfully"
-        );
+        console.log("[WebRTC] Answer sent");
 
+        setStatus("Answer sent. Connecting video...");
     } catch (error) {
+        console.error("[WebRTC] Offer handling failed:", error);
 
-        console.error(
-            "[ICE] Failed to handle remote candidate:",
-            error
-        );
-    }
-}
-
-// ============================================================
-// FLUSH QUEUED ICE CANDIDATES
-// ============================================================
-
-async function flushPendingIceCandidates() {
-
-    if (
-        !peerConnection ||
-        !peerConnection.remoteDescription
-    ) {
-
-        return;
-    }
-
-    if (
-        pendingIceCandidates.length === 0
-    ) {
-
-        return;
-    }
-
-    console.log(
-        `[ICE] Flushing ${pendingIceCandidates.length} queued candidates`
-    );
-
-    const candidates =
-        [...pendingIceCandidates];
-
-    pendingIceCandidates = [];
-
-    for (
-        const candidate of candidates
-    ) {
-
-        try {
-
-            await peerConnection.addIceCandidate(
-                candidate
-            );
-
-            console.log(
-                "[ICE] Queued candidate added successfully"
-            );
-
-        } catch (error) {
-
-            console.error(
-                "[ICE] Failed to add queued candidate:",
-                error
-            );
+        if (!viewerRejected) {
+            setStatus("Failed to establish WebRTC connection");
         }
     }
 }
 
 // ============================================================
-// STOP PEER CONNECTION
+// HANDLE REMOTE ICE CANDIDATES
+// ============================================================
+
+async function handleRemoteCandidate(message) {
+    try {
+        if (viewerRejected || !peerConnection) return;
+
+        const candidate = new RTCIceCandidate({
+            candidate: message.candidate,
+            sdpMid: message.sdpMid,
+            sdpMLineIndex: message.sdpMLineIndex
+        });
+
+        if (!peerConnection.remoteDescription) {
+            remoteCandidatesQueue.push(candidate);
+            wlog(
+                "[ICE] Candidate queued:",
+                remoteCandidatesQueue.length
+            );
+            return;
+        }
+
+        await peerConnection.addIceCandidate(candidate);
+
+        wlog("[ICE] Remote candidate added");
+    } catch (error) {
+        console.error("[ICE] Failed to add candidate:", error);
+    }
+}
+
+async function flushRemoteCandidates() {
+    if (!peerConnection || !peerConnection.remoteDescription) return;
+
+    const queuedCandidates = remoteCandidatesQueue.splice(0);
+
+    for (const candidate of queuedCandidates) {
+        try {
+            if (!peerConnection || viewerRejected) return;
+
+            await peerConnection.addIceCandidate(candidate);
+            wlog("[ICE] Queued candidate added");
+        } catch (error) {
+            console.error("[ICE] Failed to add queued candidate:", error);
+        }
+    }
+}
+
+// ============================================================
+// STOP WEBRTC
 // ============================================================
 
 function stopPeerConnection() {
-
-    console.log(
-        "[WebRTC] Stopping PeerConnection"
-    );
-
-    // IMPORTANT:
-    // Stop API immediately when PeerConnection stops.
+    // Line calls only make sense while connected to the stream.
     stopLineCallPolling();
 
-    if (peerConnection) {
+    stopStatsMonitoring();
 
+    if (peerConnection) {
         peerConnection.ontrack = null;
         peerConnection.onicecandidate = null;
         peerConnection.onconnectionstatechange = null;
         peerConnection.oniceconnectionstatechange = null;
 
         peerConnection.close();
-
         peerConnection = null;
     }
 
-    pendingIceCandidates = [];
+    remoteCandidatesQueue = [];
+    lastStats = null;
+    renderedFrames = 0;
+    lastFPSCheck = performance.now();
 
-    videoElement.srcObject = null;
+    stopFrameCounting();
+
+    if (videoElement) {
+        videoElement.pause();
+        videoElement.srcObject = null;
+    }
+
+    if (fpsElement) {
+        fpsElement.textContent = `FPS: -- / ${TARGET_FPS}`;
+    }
 
     producerId = null;
-
-    updateConnectionUI(
-        "disconnected"
-    );
 }
 
 // ============================================================
-// VIDEO FPS
+// RENDERED FPS COUNTER
 // ============================================================
 
 function updateFPS() {
+    const now = performance.now();
+    const elapsed = now - lastFPSCheck;
 
-    const now =
-        performance.now();
+    // Nothing is playing -> leave the "FPS: --" text alone and
+    // skip the DOM write.
+    if (
+        !videoElement.srcObject ||
+        videoElement.paused
+    ) {
+        renderedFrames = 0;
+        lastFPSCheck = now;
+        return;
+    }
 
-    const elapsed =
-        now - lastFPSCheck;
+    if (elapsed <= 0) {
+        return;
+    }
 
-    if (elapsed >= 1000) {
+    const fps = renderedFrames * 1000 / elapsed;
 
-        const fps =
-            renderedFrames * 1000 / elapsed;
+    if (fpsElement) {
+        const currentFPS = fps.toFixed(1);
+        const targetStatus =
+            fps >= TARGET_FPS - 0.5 ? "TARGET" : "BELOW TARGET";
 
         fpsElement.textContent =
-            uiConnectionState === "connected"
-                ? `FPS: ${fps.toFixed(1)}`
-                : "FPS: --";
-
-        renderedFrames = 0;
-
-        lastFPSCheck = now;
+            `FPS: ${currentFPS} / ${TARGET_FPS} (${targetStatus})`;
     }
 
-    requestAnimationFrame(
-        updateFPS
-    );
+    renderedFrames = 0;
+    lastFPSCheck = now;
 }
 
 // ============================================================
-// VIDEO FRAME CALLBACK
+// VIDEO FRAME COUNTING
 // ============================================================
 
-if (
-    "requestVideoFrameCallback"
-    in HTMLVideoElement.prototype
-) {
-
-    function countVideoFrame() {
-
-        renderedFrames++;
-
-        videoElement.requestVideoFrameCallback(
-            countVideoFrame
-        );
+function countVideoFrame() {
+    if (
+        viewerRejected ||
+        !videoElement.srcObject ||
+        videoElement.paused ||
+        videoElement.ended
+    ) {
+        videoFrameCallbackId = null;
+        return;
     }
 
-    videoElement.requestVideoFrameCallback(
-        countVideoFrame
-    );
+    renderedFrames++;
 
+    videoFrameCallbackId =
+        videoElement.requestVideoFrameCallback(countVideoFrame);
+}
+
+function startFrameCounting() {
+    if (
+        !("requestVideoFrameCallback" in HTMLVideoElement.prototype) ||
+        videoFrameCallbackId !== null ||
+        !videoElement.srcObject ||
+        videoElement.paused
+    ) {
+        return;
+    }
+
+    videoFrameCallbackId =
+        videoElement.requestVideoFrameCallback(countVideoFrame);
+}
+
+function stopFrameCounting() {
+    if (
+        videoFrameCallbackId !== null &&
+        typeof videoElement.cancelVideoFrameCallback === "function"
+    ) {
+        videoElement.cancelVideoFrameCallback(videoFrameCallbackId);
+    }
+
+    videoFrameCallbackId = null;
+}
+
+if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) {
+    videoElement.addEventListener("playing", () => {
+        renderedFrames = 0;
+        lastFPSCheck = performance.now();
+        startFrameCounting();
+    });
+
+    videoElement.addEventListener("pause", stopFrameCounting);
+    videoElement.addEventListener("ended", stopFrameCounting);
 } else {
-
     console.warn(
-        "[Video] requestVideoFrameCallback not supported; using fallback"
+        "[Video] requestVideoFrameCallback unsupported; using fallback"
     );
 
-    videoElement.addEventListener(
-        "timeupdate",
-        () => {
+    // Fallback is approximate, not a reliable actual FPS measurement.
+    let lastMediaTime = -1;
+
+    videoElement.addEventListener("timeupdate", () => {
+        if (
+            !videoElement.paused &&
+            videoElement.currentTime !== lastMediaTime
+        ) {
+            lastMediaTime = videoElement.currentTime;
             renderedFrames++;
         }
-    );
+    });
 }
 
+// Once a second is enough for the FPS text. (It used to run a
+// callback on every screen frame, ~60 times a second.)
+fpsIntervalId = setInterval(updateFPS, 1000);
+
 // ============================================================
-// START FPS LOOP
+// WEBRTC STATS - RECEIVE FPS, DROPS, PACKET LOSS, RTT
 // ============================================================
 
-requestAnimationFrame(
-    updateFPS
-);
+function startStatsMonitoring() {
+    // getStats() every second + two console logs per tick is
+    // debug-only work, skipped entirely unless WEBRTC_DEBUG is on.
+    if (!WEBRTC_DEBUG) return;
+
+    if (statsIntervalId !== null) return;
+
+    statsIntervalId = setInterval(
+        logWebRTCStats,
+        STATS_INTERVAL_MS
+    );
+
+    logWebRTCStats();
+}
+
+function stopStatsMonitoring() {
+    if (statsIntervalId !== null) {
+        clearInterval(statsIntervalId);
+        statsIntervalId = null;
+    }
+}
+
+async function logWebRTCStats() {
+    const pc = peerConnection;
+
+    if (
+        !pc ||
+        viewerRejected ||
+        pc.connectionState === "closed"
+    ) {
+        return;
+    }
+
+    try {
+        const stats = await pc.getStats();
+
+        let inboundVideo = null;
+        let selectedCandidatePair = null;
+        let transportStats = null;
+
+        stats.forEach((report) => {
+            if (
+                report.type === "inbound-rtp" &&
+                (report.kind === "video" || report.mediaType === "video")
+            ) {
+                inboundVideo = report;
+            }
+
+            if (
+                report.type === "transport" &&
+                report.selectedCandidatePairId
+            ) {
+                transportStats = stats.get(
+                    report.selectedCandidatePairId
+                );
+            }
+
+            if (
+                report.type === "candidate-pair" &&
+                report.state === "succeeded" &&
+                report.nominated
+            ) {
+                if (
+                    !selectedCandidatePair ||
+                    (report.bytesReceived || 0) >
+                    (selectedCandidatePair.bytesReceived || 0)
+                ) {
+                    selectedCandidatePair = report;
+                }
+            }
+        });
+
+        if (transportStats) {
+            selectedCandidatePair = transportStats;
+        }
+
+        if (inboundVideo) {
+            const receivedFPS =
+                inboundVideo.framesPerSecond ?? null;
+
+            const framesReceived =
+                inboundVideo.framesReceived ?? null;
+
+            const framesDecoded =
+                inboundVideo.framesDecoded ?? null;
+
+            const framesDropped =
+                inboundVideo.framesDropped ?? null;
+
+            const packetsLost =
+                inboundVideo.packetsLost ?? null;
+
+            const jitter =
+                inboundVideo.jitter ?? null;
+
+            const width =
+                inboundVideo.frameWidth ?? null;
+
+            const height =
+                inboundVideo.frameHeight ?? null;
+
+            let bitrateKbps = null;
+
+            if (
+                lastStats &&
+                lastStats.timestamp &&
+                inboundVideo.bytesReceived !== undefined
+            ) {
+                const elapsedSeconds =
+                    (inboundVideo.timestamp - lastStats.timestamp) / 1000;
+
+                const bytesDelta =
+                    inboundVideo.bytesReceived - lastStats.bytesReceived;
+
+                if (elapsedSeconds > 0 && bytesDelta >= 0) {
+                    bitrateKbps =
+                        (bytesDelta * 8) / elapsedSeconds / 1000;
+                }
+            }
+
+            lastStats = {
+                timestamp: inboundVideo.timestamp,
+                bytesReceived: inboundVideo.bytesReceived || 0
+            };
+
+            console.log("[Stats] Incoming video", {
+                receivedFPS,
+                framesReceived,
+                framesDecoded,
+                framesDropped,
+                packetsLost,
+                jitterMs: jitter !== null
+                    ? (jitter * 1000).toFixed(1)
+                    : null,
+                resolution: width && height
+                    ? `${width}x${height}`
+                    : "Unknown",
+                bitrateKbps: bitrateKbps !== null
+                    ? bitrateKbps.toFixed(0)
+                    : "Measuring..."
+            });
+        } else {
+            console.log("[Stats] Waiting for inbound video stats");
+        }
+
+        if (selectedCandidatePair) {
+            console.log("[Stats] Selected connection", {
+                currentRoundTripTimeMs:
+                    selectedCandidatePair.currentRoundTripTime !== undefined
+                        ? (
+                            selectedCandidatePair.currentRoundTripTime * 1000
+                        ).toFixed(1)
+                        : "Unknown",
+                availableIncomingBitrateKbps:
+                    selectedCandidatePair.availableIncomingBitrate !== undefined
+                        ? (
+                            selectedCandidatePair.availableIncomingBitrate / 1000
+                        ).toFixed(0)
+                        : "Unknown",
+                localCandidateType:
+                    selectedCandidatePair.localCandidateId
+                        ? stats.get(
+                            selectedCandidatePair.localCandidateId
+                        )?.candidateType
+                        : "Unknown",
+                remoteCandidateType:
+                    selectedCandidatePair.remoteCandidateId
+                        ? stats.get(
+                            selectedCandidatePair.remoteCandidateId
+                        )?.candidateType
+                        : "Unknown"
+            });
+        }
+    } catch (error) {
+        console.error("[Stats] Failed to collect WebRTC stats:", error);
+    }
+}
 
 // ============================================================
 // LINE CALL API
 //
-// IMPORTANT BEHAVIOR:
-//
-// CONNECTED:
-//   API continuously hit hoti hai.
-//
-// DISCONNECTED:
-//   API polling completely stop hoti hai.
-//   Current request bhi abort hoti hai.
-//   Jo line call / clip screen par hai woh apne normal timer
-//   tak wahin rehta hai (hide nahi hota).
-//
-// RECONNECTED:
-//   API polling dobara start hoti hai (naya loop ID, purana
-//   loop khud band ho jata hai).
-//
-// Session ID:
-//   URL se jo ONE sessionId mili hai, wahi use hoti hai.
+// Polls the tracking backend for the latest line call event while
+// the viewer is connected, shows a big IN/OUT/UNCERTAIN badge on
+// the video, adds a replay card (if the event has a clip), and
+// plots the ball's landing spot on the 2D bounce map — but ONLY for
+// events whose type/categories say "bounce" (see isBounceEvent()).
+// Any other event type still shows the badge/replay, but is left
+// off the map.
 // ============================================================
 
-// IMPORTANT: if this viewer page is served over HTTPS, this MUST
-// be an https:// URL too (browsers block http:// requests from an
+// IMPORTANT: if this viewer page is served over HTTPS, this MUST be
+// an https:// URL too (browsers block http:// requests from an
 // https:// page = "mixed content"), and the API must allow this
 // page's origin via CORS.
+// TEST SWITCH: false = line call API is never hit (use this to check
+// whether polling is what drops the FPS). Set back to true afterwards.
+const LINECALL_POLLING_ENABLED = false;
+
 const LINECALL_API_BASE =
     "http://13.60.246.31:8000";
 
@@ -1403,7 +877,6 @@ if (
     window.location.protocol === "https:" &&
     LINECALL_API_BASE.startsWith("http://")
 ) {
-
     console.error(
         "[LineCall] ❌ Viewer is on HTTPS but LINECALL_API_BASE is HTTP. " +
         "The browser will block line call requests (mixed content). " +
@@ -1411,26 +884,12 @@ if (
     );
 }
 
-// How long the big IN/OUT badge stays on the video.
-const LINECALL_SHOW_MS =
-    2000;
-
-// Small gap between polls so a fast/404 response doesn't turn the
-// loop into hundreds of requests per second.
-const LINECALL_MIN_GAP_MS =
-    200;
-
-const LINECALL_ERROR_RETRY_MS =
-    300;
-
-// Bumped up from 2000ms: the tracking pipeline can take a bit to
-// finish processing a frame before the "latest" event is ready, and
-// a request that legitimately takes >2s was being treated as a fatal
-// timeout (see the AbortError handling below), which made the whole
-// polling loop die. Increasing this reduces how often we even hit
-// that edge case in the first place.
-const LINECALL_REQUEST_TIMEOUT_MS =
-    5000;
+const LINECALL_SHOW_MS = 2000;
+// Pause between polls. 500ms is plenty for line calls and keeps
+// the page quiet (it was 200ms = ~5 requests every second).
+const LINECALL_MIN_GAP_MS = 500;
+const LINECALL_ERROR_RETRY_MS = 300;
+const LINECALL_REQUEST_TIMEOUT_MS = 5000;
 
 const lineCallElement =
     document.getElementById("lineCall");
@@ -1441,149 +900,331 @@ const lineCallResultElement =
 const lineCallDetailElement =
     document.getElementById("lineCallDetail");
 
-// Replay list (one card per line call that carries a clip url)
 const replaysListElement =
     document.getElementById("replaysList");
 
 const replaysEmptyElement =
     document.getElementById("replaysEmpty");
 
-console.log(
+const courtMapWrapElement =
+    document.getElementById("courtMapWrap");
+
+const courtMapEmptyElement =
+    document.getElementById("courtMapEmpty");
+
+dlog(
     "[LineCall] DOM elements found:",
     {
         lineCallElement: !!lineCallElement,
         lineCallResultElement: !!lineCallResultElement,
         lineCallDetailElement: !!lineCallDetailElement,
         replaysListElement: !!replaysListElement,
-        replaysEmptyElement: !!replaysEmptyElement
+        replaysEmptyElement: !!replaysEmptyElement,
+        courtMapWrapElement: !!courtMapWrapElement,
+        courtMapEmptyElement: !!courtMapEmptyElement
     }
 );
 
-// ============================================================
-// LINE CALL STATE
-// ============================================================
-
 let lastLineCallEventId = null;
-
 let lineCallFirstPoll = true;
-
 let lineCallHideTimer = null;
 
-// IMPORTANT:
-// This is NOT a Session ID.
-// This only controls whether the API polling loop is running.
+// Not a session ID — just whether the polling loop is running.
 let lineCallLoopRunning = false;
 
-// Every call to startLineCallPolling() gets a new loop ID. An older
-// loop that is still sleeping/awaiting notices its ID is stale and
-// exits, so a quick disconnect -> reconnect never leaves two loops
-// polling at the same time.
+// Every startLineCallPolling() call gets a new loop ID; an older
+// loop still winding down notices it's stale and exits, so a quick
+// disconnect -> reconnect never runs two loops at once.
 let lineCallLoopId = 0;
 
-// Current API request controller.
-// Used to immediately cancel request on disconnect.
 let activeLineCallController = null;
-
-// Counts every /latest API hit, purely for debugging in the console.
 let lineCallPollCount = 0;
 
 function isLoopActive(loopId) {
-
     return (
         lineCallLoopRunning &&
         loopId === lineCallLoopId
     );
 }
 
-// ============================================================
-// SLEEP
-// ============================================================
-
 function sleep(ms) {
-
-    return new Promise(
-        (resolve) => setTimeout(
-            resolve,
-            ms
-        )
-    );
+    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// ============================================================
-// SAFE CLIP URL
-//
-// Only https:// links are accepted for the clip, so a bad/odd API
+// Only https:// links are accepted for a clip, so a bad/odd API
 // value (e.g. "javascript:...") can never reach <video src> or
 // <a href>.
-// ============================================================
-
 function getSafeClipUrl(rawUrl) {
-
-    if (
-        typeof rawUrl !== "string" ||
-        !rawUrl
-    ) {
+    if (typeof rawUrl !== "string" || !rawUrl) {
         return null;
     }
 
     try {
-
-        const parsed =
-            new URL(rawUrl);
+        const parsed = new URL(rawUrl);
 
         if (parsed.protocol !== "https:") {
-
             console.warn(
                 "[LineCall] Ignoring non-https clip url:",
                 rawUrl
             );
-
             return null;
         }
 
         return parsed.href;
 
     } catch (error) {
-
         console.warn(
             "[LineCall] Ignoring invalid clip url:",
             rawUrl
         );
-
         return null;
     }
 }
 
-// ============================================================
-// DISPLAY
-// ============================================================
+// An event counts as a "bounce" (and therefore gets plotted on the
+// 2D map) if its type is "bounce" or its categories list includes
+// "bounce". Everything else (badge + replay) still shows normally,
+// it's just left off the court map.
+function isBounceEvent(event) {
+    if (event.type === "bounce") {
+        return true;
+    }
+
+    if (
+        Array.isArray(event.categories) &&
+        event.categories.includes("bounce")
+    ) {
+        return true;
+    }
+
+    return false;
+}
 
 function hideLineCall() {
+    dlog("[LineCall] Hiding badge (timer expired).");
 
-    console.log(
-        "[LineCall] Hiding badge (timer expired)."
+    lineCallElement.classList.remove("show");
+}
+
+// ============================================================
+// 2D BOUNCE MAP
+//
+// Every bounce stays on the map for the whole session (unlike the
+// badge above, which auto-hides). Court size comes from the
+// backend's court_dimensions (court_w_ft, court_h_ft, net_offset,
+// kitchen_ft) on the event itself, not a hardcoded size, and the
+// map rebuilds itself if those numbers ever change mid-session.
+// ============================================================
+
+const COURT_MAP_SCALE = 10; // SVG units per foot
+
+// Keeps the SVG light on very long sessions (oldest dots go first).
+const MAX_MAP_DOTS = 300;
+
+const DEFAULT_COURT_DIMENSIONS = {
+    court_w_ft: 20,
+    court_h_ft: 44,
+    net_offset: 22,
+    kitchen_ft: 7
+};
+
+let courtMapDims = null;
+let courtMapSvgElement = null;
+let courtMapDotsGroup = null;
+
+function dimensionsChanged(a, b) {
+    if (!a || !b) {
+        return true;
+    }
+
+    return (
+        a.court_w_ft !== b.court_w_ft ||
+        a.court_h_ft !== b.court_h_ft ||
+        a.net_offset !== b.net_offset ||
+        a.kitchen_ft !== b.kitchen_ft
+    );
+}
+
+function buildCourtMap(dims) {
+    dlog(
+        "[CourtMap] Building court map with dimensions:",
+        dims
     );
 
-    lineCallElement.classList.remove(
-        "show"
+    courtMapDims = dims;
+
+    const w = dims.court_w_ft * COURT_MAP_SCALE;
+    const h = dims.court_h_ft * COURT_MAP_SCALE;
+
+    const netY = dims.net_offset * COURT_MAP_SCALE;
+
+    const kitchenTopY =
+        (dims.net_offset - dims.kitchen_ft) * COURT_MAP_SCALE;
+
+    const kitchenBottomY =
+        (dims.net_offset + dims.kitchen_ft) * COURT_MAP_SCALE;
+
+    const centerX = w / 2;
+
+    const svgNS = "http://www.w3.org/2000/svg";
+
+    const svg = document.createElementNS(svgNS, "svg");
+
+    svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+
+    function addLine(cls, x1, y1, x2, y2) {
+        const line = document.createElementNS(svgNS, "line");
+
+        line.setAttribute("class", cls);
+        line.setAttribute("x1", x1);
+        line.setAttribute("y1", y1);
+        line.setAttribute("x2", x2);
+        line.setAttribute("y2", y2);
+
+        svg.appendChild(line);
+    }
+
+    const outline = document.createElementNS(svgNS, "rect");
+
+    outline.setAttribute("class", "court-map-outline");
+    outline.setAttribute("x", 1);
+    outline.setAttribute("y", 1);
+    outline.setAttribute("width", Math.max(0, w - 2));
+    outline.setAttribute("height", Math.max(0, h - 2));
+
+    svg.appendChild(outline);
+
+    addLine("court-map-net", 0, netY, w, netY);
+
+    addLine("court-map-kitchen", 0, kitchenTopY, w, kitchenTopY);
+    addLine("court-map-kitchen", 0, kitchenBottomY, w, kitchenBottomY);
+
+    // No center line inside the kitchen itself, only net-to-kitchen
+    // on each side.
+    addLine("court-map-center", centerX, 0, centerX, kitchenTopY);
+    addLine("court-map-center", centerX, kitchenBottomY, centerX, h);
+
+    const dotsGroup = document.createElementNS(svgNS, "g");
+
+    dotsGroup.setAttribute("id", "courtMapDots");
+
+    svg.appendChild(dotsGroup);
+
+    courtMapWrapElement.innerHTML = "";
+    courtMapWrapElement.appendChild(svg);
+
+    courtMapSvgElement = svg;
+    courtMapDotsGroup = dotsGroup;
+}
+
+function addCourtMapDot(event, result) {
+    const courtLocation = event.court_location;
+
+    if (
+        !courtLocation ||
+        typeof courtLocation.x !== "number" ||
+        typeof courtLocation.y !== "number" ||
+        !isFinite(courtLocation.x) ||
+        !isFinite(courtLocation.y)
+    ) {
+        console.warn(
+            "[CourtMap] Event has no usable court_location, skipping dot.",
+            event
+        );
+        return;
+    }
+
+    const dims =
+        event.court_dimensions ||
+        courtMapDims ||
+        DEFAULT_COURT_DIMENSIONS;
+
+    if (
+        !courtMapSvgElement ||
+        dimensionsChanged(dims, courtMapDims)
+    ) {
+        buildCourtMap(dims);
+    }
+
+    // A small margin outside the lines so an OUT ball is visibly
+    // outside instead of being squashed onto the edge.
+    const marginFt = 2.5;
+
+    const clampedX = Math.max(
+        -marginFt,
+        Math.min(courtMapDims.court_w_ft + marginFt, courtLocation.x)
     );
+
+    const clampedY = Math.max(
+        -marginFt,
+        Math.min(courtMapDims.court_h_ft + marginFt, courtLocation.y)
+    );
+
+    const cx = clampedX * COURT_MAP_SCALE;
+    const cy = clampedY * COURT_MAP_SCALE;
+
+    const svgNS = "http://www.w3.org/2000/svg";
+
+    const dot = document.createElementNS(svgNS, "circle");
+
+    const dotClass =
+        ["in", "out", "uncertain"].includes(result)
+            ? result
+            : "out";
+
+    dot.setAttribute("class", `court-map-dot ${dotClass} new`);
+    dot.setAttribute("cx", cx);
+    dot.setAttribute("cy", cy);
+    dot.setAttribute("r", 4.5);
+
+    const title = document.createElementNS(svgNS, "title");
+
+    const titleParts = [
+        dotClass.toUpperCase(),
+        event.nearest_line,
+        typeof event.nearest_line_distance === "number"
+            ? `${event.nearest_line_distance} ft from line`
+            : null
+    ].filter(Boolean);
+
+    title.textContent = titleParts.join(" · ");
+
+    dot.appendChild(title);
+
+    courtMapDotsGroup.appendChild(dot);
+
+    while (courtMapDotsGroup.childNodes.length > MAX_MAP_DOTS) {
+        courtMapDotsGroup.removeChild(courtMapDotsGroup.firstChild);
+    }
+
+    setTimeout(() => dot.classList.remove("new"), 600);
+
+    courtMapEmptyElement.style.display = "none";
+
+    dlog("[CourtMap] 🟢 Plotted bounce:", {
+        x: courtLocation.x,
+        y: courtLocation.y,
+        result: dotClass
+    });
 }
 
 // ============================================================
 // REPLAY LIST
-//
-// Every new line call, if the event has a clip url, adds a
-// "Call #N" replay card under the video (newest at the end).
 // ============================================================
 
 const MAX_REPLAYS = 40;
 
+// "none": a new clip does NOT start downloading by itself. The clips
+// are .mov files, and downloading them while the live stream is
+// running steals bandwidth and makes the live video stutter every
+// time a line call arrives. A clip loads when you press play.
+// Use "metadata" if you want a thumbnail frame on every card
+// (costs bandwidth + decoder memory for each clip).
+const REPLAY_PRELOAD = "none";
+
 let totalCalls = 0;
 
-// fetch -> blob -> save to device. If that fails (usually CORS on
-// the S3 bucket), fall back to opening the clip in a new tab.
 async function downloadClip(clipUrl, button) {
-
     if (button.classList.contains("busy")) {
         return;
     }
@@ -1591,47 +1232,29 @@ async function downloadClip(clipUrl, button) {
     let fileName = "line-call-clip.mov";
 
     try {
-
-        fileName =
-            decodeURIComponent(
-                clipUrl.split("?")[0].split("/").pop() ||
-                fileName
-            );
-
+        fileName = decodeURIComponent(
+            clipUrl.split("?")[0].split("/").pop() || fileName
+        );
     } catch (error) {
-
         // Keep the default file name.
     }
 
-    console.log(
-        "[Replay] ⬇ Downloading clip:",
-        clipUrl
-    );
+    dlog("[Replay] ⬇ Downloading clip:", clipUrl);
 
     button.classList.add("busy");
-
     button.textContent = "...";
 
     try {
-
-        const response =
-            await fetch(clipUrl);
+        const response = await fetch(clipUrl);
 
         if (!response.ok) {
-
-            throw new Error(
-                `Download returned ${response.status}`
-            );
+            throw new Error(`Download returned ${response.status}`);
         }
 
-        const blob =
-            await response.blob();
+        const blob = await response.blob();
+        const blobUrl = URL.createObjectURL(blob);
 
-        const blobUrl =
-            URL.createObjectURL(blob);
-
-        const link =
-            document.createElement("a");
+        const link = document.createElement("a");
 
         link.href = blobUrl;
         link.download = fileName;
@@ -1640,95 +1263,69 @@ async function downloadClip(clipUrl, button) {
         link.click();
         link.remove();
 
-        setTimeout(
-            () => URL.revokeObjectURL(blobUrl),
-            10000
-        );
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
 
     } catch (error) {
-
         // Usually CORS: the S3 bucket doesn't allow this origin.
         console.warn(
             "[Replay] ⬇ fetch download failed, opening in new tab:",
             error
         );
 
-        window.open(
-            clipUrl,
-            "_blank",
-            "noopener"
-        );
+        window.open(clipUrl, "_blank", "noopener");
 
     } finally {
-
         button.classList.remove("busy");
-
         button.textContent = "⬇";
     }
 }
 
 function addReplay(clipUrl, callNumber, result) {
+    dlog("[Replay] 🎬 Adding replay card:", callNumber, clipUrl);
 
-    console.log(
-        "[Replay] 🎬 Adding replay card:",
-        callNumber,
-        clipUrl
-    );
-
-    const card =
-        document.createElement("div");
+    const card = document.createElement("div");
 
     card.className = "replay-card";
+    card.dataset.result = result || "";
 
-    card.dataset.result =
-        result || "";
-
-    // "#t=0.1" makes the browser show a frame as the thumbnail.
-    const video =
-        document.createElement("video");
+    const video = document.createElement("video");
 
     video.controls = true;
     video.muted = true;
     video.playsInline = true;
-    video.preload = "metadata";
-    video.src = clipUrl + "#t=0.1";
+    video.preload = REPLAY_PRELOAD;
+    video.src =
+        REPLAY_PRELOAD === "none"
+            ? clipUrl
+            : clipUrl + "#t=0.1";
 
-    // Browser can't decode this clip (e.g. .mov codec) -> show a link.
-    video.addEventListener(
-        "error",
-        () => {
+    video.addEventListener("error", () => {
+        console.warn(
+            "[Replay] Clip <video> errored (unsupported format?), showing link instead:",
+            clipUrl
+        );
 
-            console.warn(
-                "[Replay] Clip <video> errored (unsupported format?), showing link instead:",
-                clipUrl
-            );
+        const fallback = document.createElement("a");
 
-            const fallback =
-                document.createElement("a");
+        fallback.className = "replay-fallback";
+        fallback.href = clipUrl;
+        fallback.target = "_blank";
+        fallback.rel = "noopener";
+        fallback.textContent = "Open clip";
 
-            fallback.className = "replay-fallback";
-            fallback.href = clipUrl;
-            fallback.target = "_blank";
-            fallback.rel = "noopener";
-            fallback.textContent = "Open clip";
+        video.replaceWith(fallback);
+    });
 
-            video.replaceWith(fallback);
-        }
-    );
-
-    const footer =
-        document.createElement("div");
+    const footer = document.createElement("div");
 
     footer.className = "replay-footer";
 
-    const title =
-        document.createElement("span");
+    const title = document.createElement("span");
 
     title.className = "replay-title";
     title.textContent = `Call #${callNumber}`;
 
-    const downloadButton =
-        document.createElement("button");
+    const downloadButton = document.createElement("button");
 
     downloadButton.type = "button";
     downloadButton.className = "replay-download";
@@ -1737,10 +1334,7 @@ function addReplay(clipUrl, callNumber, result) {
 
     downloadButton.addEventListener(
         "click",
-        () => downloadClip(
-            clipUrl,
-            downloadButton
-        )
+        () => downloadClip(clipUrl, downloadButton)
     );
 
     footer.appendChild(title);
@@ -1751,62 +1345,34 @@ function addReplay(clipUrl, callNumber, result) {
 
     replaysListElement.appendChild(card);
 
-    replaysEmptyElement.style.display =
-        "none";
+    replaysEmptyElement.style.display = "none";
 
-    // Keep memory/DOM in check on very long sessions.
-    while (
-        replaysListElement.children.length > MAX_REPLAYS
-    ) {
-
-        replaysListElement.removeChild(
-            replaysListElement.firstChild
-        );
+    while (replaysListElement.children.length > MAX_REPLAYS) {
+        replaysListElement.removeChild(replaysListElement.firstChild);
     }
 }
 
 function showLineCall(event) {
-
-    console.log(
-        "[LineCall] 📣 Displaying event on screen:",
-        event
-    );
+    dlog("[LineCall] 📣 Displaying event on screen:", event);
 
     const rawResult =
-        String(
-            event.in_out || ""
-        ).toLowerCase();
+        String(event.in_out || "").toLowerCase();
 
-    // Low/medium confidence detections are shown as "UNCERTAIN"
-    // instead of a plain IN/OUT, so the viewer knows this call is
-    // less reliable.
     const isUncertain =
         !!event.confidence_level &&
         event.confidence_level !== "high";
 
-    const result =
-        isUncertain
-            ? "uncertain"
-            : rawResult;
+    const result = isUncertain ? "uncertain" : rawResult;
 
-    console.log(
-        "[LineCall] Result resolution:",
-        {
-            rawResult,
-            confidence_level: event.confidence_level,
-            isUncertain,
-            result
-        }
-    );
+    dlog("[LineCall] Result resolution:", {
+        rawResult,
+        confidence_level: event.confidence_level,
+        isUncertain,
+        result
+    });
 
     lineCallElement.dataset.result =
-        [
-            "in",
-            "out",
-            "uncertain"
-        ].includes(result)
-            ? result
-            : "";
+        ["in", "out", "uncertain"].includes(result) ? result : "";
 
     const labelText =
         isUncertain
@@ -1814,196 +1380,144 @@ function showLineCall(event) {
             : (
                 rawResult
                     ? rawResult.toUpperCase()
-                    : String(
-                        event.type || "EVENT"
-                    ).toUpperCase()
+                    : String(event.type || "EVENT").toUpperCase()
             );
 
-    lineCallResultElement.textContent =
-        labelText;
+    lineCallResultElement.textContent = labelText;
 
     const details = [];
 
     if (event.nearest_line) {
-
-        details.push(
-            event.nearest_line
-        );
+        details.push(event.nearest_line);
     }
 
-    if (
-        typeof event.nearest_line_distance ===
-        "number"
-    ) {
-
-        details.push(
-            `${event.nearest_line_distance} ft`
-        );
+    if (typeof event.nearest_line_distance === "number") {
+        details.push(`${event.nearest_line_distance} ft`);
     }
 
-    lineCallDetailElement.textContent =
-        details.join(" · ");
+    lineCallDetailElement.textContent = details.join(" · ");
 
-    lineCallElement.classList.add(
-        "show"
-    );
+    lineCallElement.classList.add("show");
 
-    // Count this call (used only for the replay card's "Call #N"
-    // label), and add its replay card if it has a clip.
     totalCalls++;
 
-    const clipUrl =
-        getSafeClipUrl(event.url);
-
-    if (clipUrl) {
-
-        addReplay(
-            clipUrl,
-            totalCalls,
-            result
+    // Only plot BOUNCE events on the 2D map.
+    if (isBounceEvent(event)) {
+        addCourtMapDot(event, result);
+    } else {
+        dlog(
+            "[CourtMap] Skipping non-bounce event (type:",
+            event.type,
+            ", categories:",
+            event.categories,
+            ")"
         );
     }
 
-    clearTimeout(
-        lineCallHideTimer
-    );
+    const clipUrl = getSafeClipUrl(event.url);
 
-    console.log(
+    if (clipUrl) {
+        addReplay(clipUrl, totalCalls, result);
+    }
+
+    clearTimeout(lineCallHideTimer);
+
+    dlog(
         "[LineCall] Badge will auto-hide after",
         LINECALL_SHOW_MS,
         "ms"
     );
 
-    lineCallHideTimer =
-        setTimeout(
-            hideLineCall,
-            LINECALL_SHOW_MS
-        );
+    lineCallHideTimer = setTimeout(hideLineCall, LINECALL_SHOW_MS);
 }
 
-// ============================================================
-// POLL API ONCE
-// ============================================================
-
 async function pollLineCallOnce(loopId) {
-
-    // Do not make API request if user is not connected
-    // (or if this loop has been replaced by a newer one).
     if (!isLoopActive(loopId)) {
-        console.log(
-            "[LineCall] Skipping poll, loop is not active."
-        );
+        dlog("[LineCall] Skipping poll, loop is not active.");
         return;
     }
 
     lineCallPollCount++;
 
-    const controller =
-        new AbortController();
+    const controller = new AbortController();
 
-    activeLineCallController =
-        controller;
+    activeLineCallController = controller;
 
-    const timeout =
-        setTimeout(
-            () => controller.abort(),
-            LINECALL_REQUEST_TIMEOUT_MS
-        );
+    const timeout = setTimeout(
+        () => controller.abort(),
+        LINECALL_REQUEST_TIMEOUT_MS
+    );
 
     try {
-
         const url =
             `${LINECALL_API_BASE}/tracknet/realtime/notifications/` +
             `${encodeURIComponent(sessionId)}/latest`;
 
-        console.log(
-            `[LineCall] API HIT #${lineCallPollCount}:`,
-            url
-        );
+        dlog(`[LineCall] API HIT #${lineCallPollCount}:`, url);
 
-        const response =
-            await fetch(
-                url,
-                {
-                    cache: "no-store",
-                    signal: controller.signal
-                }
-            );
+        const response = await fetch(url, {
+            cache: "no-store",
+            signal: controller.signal
+        });
 
-        console.log(
+        dlog(
             `[LineCall] API response status #${lineCallPollCount}:`,
             response.status
         );
 
-        // If connection was lost while
-        // request was running, don't process it.
         if (!isLoopActive(loopId)) {
-            console.log(
+            dlog(
                 "[LineCall] Loop stopped while request was in flight, discarding response."
             );
             return;
         }
 
-        if (
-            response.status === 404
-        ) {
-
-            console.log(
+        if (response.status === 404) {
+            dlog(
                 "[LineCall] 404 - no event available yet for this session."
             );
-
-            // No event available.
             lineCallFirstPoll = false;
-
             return;
         }
 
         if (!response.ok) {
-
-            throw new Error(
-                `API returned ${response.status}`
-            );
+            throw new Error(`API returned ${response.status}`);
         }
 
-        const data =
-            await response.json();
+        const data = await response.json();
 
-        // Connection may have disappeared
-        // while JSON was being processed.
         if (!isLoopActive(loopId)) {
-            console.log(
+            dlog(
                 "[LineCall] Loop stopped while parsing JSON, discarding response."
             );
             return;
         }
 
-        // ----------------------------------------------------
-        // DEBUG:
-        // Log the raw payload every time so we can see exactly
-        // what shape the API is sending (top-level event_id?
-        // wrapped in "event"/"data"? different field name?).
-        // ----------------------------------------------------
-        console.log(
-            "[LineCall] Raw response:",
-            data
-        );
+        dlog("[LineCall] Raw response:", data);
+
+        // The API sometimes returns 200 with a plain empty object
+        // ("{}") instead of a 404 when there's no event yet. Treat
+        // that the same as a 404 instead of warning every poll.
+        const isEmptyObject =
+            data &&
+            typeof data === "object" &&
+            !Array.isArray(data) &&
+            Object.keys(data).length === 0;
+
+        if (isEmptyObject) {
+            dlog(
+                "[LineCall] Empty {} response - no event yet for this session."
+            );
+            lineCallFirstPoll = false;
+            return;
+        }
 
         const event =
             data && data.event_id
                 ? data
-                : (
-                    data &&
-                    (
-                        data.event ||
-                        data.data
-                    )
-                ) || null;
+                : (data && (data.event || data.data)) || null;
 
-        if (
-            !event ||
-            !event.event_id
-        ) {
-
+        if (!event || !event.event_id) {
             console.warn(
                 "[LineCall] No usable event_id found in response. " +
                 "Check the raw response logged above — the shape " +
@@ -2012,14 +1526,10 @@ async function pollLineCallOnce(loopId) {
             );
 
             lineCallFirstPoll = false;
-
             return;
         }
 
-        // Log every event_id we compare against, even when it's the
-        // same as before, so "no new event yet" is visibly different
-        // from "we never detect changes".
-        console.log(
+        dlog(
             "[LineCall] event_id from API:",
             event.event_id,
             "| last seen:",
@@ -2030,119 +1540,98 @@ async function pollLineCallOnce(loopId) {
             !!event.url
         );
 
-        // ----------------------------------------------------
-        // First API hit after connection:
-        // Don't show old/latest event.
-        // Just remember its ID.
-        // ----------------------------------------------------
-
         if (lineCallFirstPoll) {
-
             lineCallFirstPoll = false;
+            lastLineCallEventId = event.event_id;
 
-            lastLineCallEventId =
-                event.event_id;
-
-            console.log(
+            dlog(
                 "[LineCall] Initial event remembered (not shown):",
                 event.event_id
             );
-
             return;
         }
 
-        // ----------------------------------------------------
-        // Only NEW event is displayed.
-        // ----------------------------------------------------
+        if (event.event_id !== lastLineCallEventId) {
+            lastLineCallEventId = event.event_id;
 
-        if (
-            event.event_id !==
-            lastLineCallEventId
-        ) {
+            console.log("[LineCall] 🟢 NEW EVENT DETECTED:", event);
 
-            lastLineCallEventId =
-                event.event_id;
-
-            console.log(
-                "[LineCall] 🟢 NEW EVENT DETECTED:",
-                event
-            );
-
-            showLineCall(
-                event
-            );
+            showLineCall(event);
 
         } else {
-
-            console.log(
+            dlog(
                 "[LineCall] Same event as last poll, nothing new. event_id:",
                 event.event_id
             );
         }
 
     } finally {
+        clearTimeout(timeout);
 
-        clearTimeout(
-            timeout
-        );
-
-        if (
-            activeLineCallController ===
-            controller
-        ) {
-
-            activeLineCallController =
-                null;
+        if (activeLineCallController === controller) {
+            activeLineCallController = null;
         }
     }
 }
 
-// ============================================================
-// START LINE CALL POLLING
-//
-// Called ONLY when WebRTC becomes connected.
-// ============================================================
-
-function startLineCallPolling() {
-
-    // Already running -> do nothing.
-    // This prevents multiple loops.
-    if (lineCallLoopRunning) {
-
-        console.log(
-            "[LineCall] Polling already running."
-        );
-
+// ------------------------------------------------------------
+// PUSH MODE: the server sends line calls over the WebSocket.
+// ------------------------------------------------------------
+function handlePushedLineCall(event, isInitial) {
+    if (!event || !event.event_id) {
+        console.warn("[LineCall] Pushed message had no event_id:", event);
         return;
     }
 
-    console.log(
-        "[LineCall] 🟢 User connected -> START API polling"
-    );
+    if (isInitial) {
+        lastLineCallEventId = event.event_id;
+        dlog("[LineCall] Latest event remembered (not shown):", event.event_id);
+        return;
+    }
 
-    console.log(
-        "[LineCall] Session ID:",
-        sessionId
-    );
+    if (event.event_id === lastLineCallEventId) {
+        dlog("[LineCall] Duplicate pushed event ignored:", event.event_id);
+        return;
+    }
 
-    console.log(
-        "[LineCall] Config:",
-        {
-            LINECALL_API_BASE,
-            LINECALL_SHOW_MS,
-            LINECALL_MIN_GAP_MS,
-            LINECALL_ERROR_RETRY_MS,
-            LINECALL_REQUEST_TIMEOUT_MS
-        }
-    );
+    lastLineCallEventId = event.event_id;
+
+    console.log("[LineCall] 🟢 NEW EVENT (pushed):", event);
+
+    showLineCall(event);
+}
+
+function startLineCallPolling() {
+    if (!LINECALL_POLLING_ENABLED) {
+        console.log("[LineCall] Polling DISABLED for FPS test");
+        return;
+    }
+
+    if (!sessionId) {
+        return;
+    }
+
+    if (lineCallLoopRunning) {
+        dlog("[LineCall] Polling already running.");
+        return;
+    }
+
+    console.log("[LineCall] 🟢 Starting API polling");
+    dlog("[LineCall] Session ID:", sessionId);
+
+    dlog("[LineCall] Config:", {
+        LINECALL_API_BASE,
+        LINECALL_SHOW_MS,
+        LINECALL_MIN_GAP_MS,
+        LINECALL_ERROR_RETRY_MS,
+        LINECALL_REQUEST_TIMEOUT_MS
+    });
 
     lineCallLoopRunning = true;
-
     lineCallPollCount = 0;
 
-    // On every new connection, the current
-    // latest event is treated as old.
-    // A genuinely newer event will be shown.
+    // On every new connection, the current latest event is treated
+    // as old; a genuinely newer event will still be shown.
     lineCallFirstPoll = true;
 
     // New loop ID -> any older loop still winding down will exit.
@@ -2151,96 +1640,55 @@ function startLineCallPolling() {
     lineCallLoop(lineCallLoopId);
 }
 
-// ============================================================
-// STOP LINE CALL POLLING
-//
-// Called when WebRTC disconnects/fails/closes.
-// ============================================================
-
 function stopLineCallPolling() {
-
     if (!lineCallLoopRunning) {
-
-        // Even if loop is already stopped,
-        // make sure any active request is cancelled.
         if (activeLineCallController) {
-
-            console.log(
+            dlog(
                 "[LineCall] Loop already stopped, but aborting a stray in-flight request."
             );
-
             activeLineCallController.abort();
-
             activeLineCallController = null;
         }
-
         return;
     }
 
     console.log(
-        "[LineCall] 🔴 User disconnected -> STOP API polling",
-        "(total polls made:",
+        "[LineCall] 🔴 Stopping API polling (total polls made:",
         lineCallPollCount,
         ")"
     );
 
     lineCallLoopRunning = false;
 
-    // Cancel current API request immediately.
     if (activeLineCallController) {
-
-        console.log(
-            "[LineCall] Aborting active API request..."
-        );
-
+        dlog("[LineCall] Aborting active API request...");
         activeLineCallController.abort();
-
         activeLineCallController = null;
     }
 
     // NOTE: we deliberately do NOT clear/hide the line call badge
-    // here (replay cards are never removed). If the badge is
-    // currently showing, it stays on screen (and still auto-hides
-    // on its own normal timer from showLineCall) even though the
-    // host/stream disconnected — so the viewer doesn't lose the
-    // last call the moment the connection drops.
-    console.log(
+    // here (replay cards and bounce-map dots are never removed). If
+    // the badge is currently showing, it stays on screen (and still
+    // auto-hides on its own normal timer from showLineCall) even
+    // though the stream disconnected.
+    dlog(
         "[LineCall] Leaving any currently visible line call as-is."
     );
 }
 
-// ============================================================
-// CONTINUOUS API POLLING LOOP
-// ============================================================
-
 async function lineCallLoop(myLoopId) {
+    dlog("[LineCall] Polling loop starting. Loop ID:", myLoopId);
 
-    console.log(
-        "[LineCall] Polling loop starting. Loop ID:",
-        myLoopId
-    );
-
-    while (
-        isLoopActive(myLoopId)
-    ) {
-
+    while (isLoopActive(myLoopId)) {
         try {
-
             await pollLineCallOnce(myLoopId);
 
-            // Connection could have been lost
-            // while the request was running.
             if (!isLoopActive(myLoopId)) {
                 break;
             }
 
-            if (
-                LINECALL_MIN_GAP_MS > 0
-            ) {
-
-                await sleep(
-                    LINECALL_MIN_GAP_MS
-                );
+            if (LINECALL_MIN_GAP_MS > 0) {
+                await sleep(LINECALL_MIN_GAP_MS);
             }
 
         } catch (error) {
@@ -2250,24 +1698,14 @@ async function lineCallLoop(myLoopId) {
             //
             //   1) Disconnect -> stopLineCallPolling() calls
             //      activeLineCallController.abort() AND sets
-            //      lineCallLoopRunning = false.
-            //      -> real stop, loop should break.
+            //      lineCallLoopRunning = false. Real stop, break.
             //
-            //   2) Per-request timeout (LINECALL_REQUEST_TIMEOUT_MS)
-            //      -> a single slow API response, the loop is still
-            //      active.
-            //      -> NOT a disconnect. Must keep polling.
-            if (
-                error &&
-                error.name === "AbortError"
-            ) {
-
+            //   2) Per-request timeout -> a single slow API
+            //      response, the loop is still active. NOT a
+            //      disconnect. Must keep polling.
+            if (error && error.name === "AbortError") {
                 if (!isLoopActive(myLoopId)) {
-
-                    console.log(
-                        "[LineCall] Request aborted (disconnect)."
-                    );
-
+                    dlog("[LineCall] Request aborted (disconnect).");
                     break;
                 }
 
@@ -2277,31 +1715,21 @@ async function lineCallLoop(myLoopId) {
                     "ms), retrying..."
                 );
 
-                await sleep(
-                    LINECALL_ERROR_RETRY_MS
-                );
-
+                await sleep(LINECALL_ERROR_RETRY_MS);
                 continue;
             }
 
-            console.warn(
-                "[LineCall] Poll failed:",
-                error
-            );
+            console.warn("[LineCall] Poll failed:", error);
 
-            // IMPORTANT:
-            // Don't retry after disconnect.
             if (!isLoopActive(myLoopId)) {
                 break;
             }
 
-            await sleep(
-                LINECALL_ERROR_RETRY_MS
-            );
+            await sleep(LINECALL_ERROR_RETRY_MS);
         }
     }
 
-    console.log(
+    dlog(
         "[LineCall] Polling loop stopped. Loop ID:",
         myLoopId,
         "| Total polls made:",
@@ -2313,38 +1741,23 @@ async function lineCallLoop(myLoopId) {
 // CLEANUP
 // ============================================================
 
-window.addEventListener(
-    "beforeunload",
-    () => {
+window.addEventListener("beforeunload", () => {
+    stopPeerConnection();
 
-        console.log(
-            "[WebViewer] Cleaning up..."
-        );
+    lineCallLoopRunning = false;
 
-        // Prevent WebSocket auto-reconnect while closing.
-        pageUnloading = true;
-
-        clearTimeout(wsReconnectTimer);
-
-        stopWsPing();
-
-        // Stop API polling.
-        lineCallLoopRunning = false;
-
-        if (
-            activeLineCallController
-        ) {
-
-            activeLineCallController.abort();
-
-            activeLineCallController = null;
-        }
-
-        stopPeerConnection();
-
-        if (socket) {
-
-            socket.close();
-        }
+    if (activeLineCallController) {
+        activeLineCallController.abort();
+        activeLineCallController = null;
     }
-);
+
+    if (fpsIntervalId !== null) {
+        clearInterval(fpsIntervalId);
+        fpsIntervalId = null;
+    }
+
+    if (socket) {
+        socket.close();
+        socket = null;
+    }
+});

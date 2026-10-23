@@ -149,9 +149,11 @@
 
         .status-badge,
         .fps-badge {
-            background: rgba(20, 22, 26, 0.78);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
+            /* No backdrop-filter here: blurring the playing video
+               behind a badge is re-done on every video frame and is
+               a common cause of GPU lag. A solid-ish colour looks
+               almost the same and costs nothing. */
+            background: rgba(14, 16, 20, 0.86);
 
             border: 1px solid rgba(255, 255, 255, 0.08);
             border-radius: 999px;
@@ -212,9 +214,7 @@
             padding: 14px 28px;
             border-radius: 16px;
 
-            background: rgba(0, 0, 0, 0.72);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
+            background: rgba(0, 0, 0, 0.82);
             border: 2px solid var(--red);
             box-shadow: 0 0 30px var(--red-glow);
 
@@ -249,6 +249,134 @@
 
         .line-call-detail:empty {
             display: none;
+        }
+
+        /* =========================
+           2D BOUNCE MAP
+           (only "bounce" events are plotted here; stays on screen
+           and accumulates for the whole session)
+        ========================= */
+
+        @keyframes dotDropIn {
+            0% {
+                transform: translateY(-30px) scale(0.5);
+                opacity: 0;
+            }
+            60% {
+                transform: translateY(3px) scale(1.25);
+                opacity: 1;
+            }
+            80% {
+                transform: translateY(-1px) scale(0.95);
+            }
+            100% {
+                transform: translateY(0) scale(1);
+            }
+        }
+
+        .court-map-panel {
+            margin-top: 22px;
+
+            padding: 16px;
+
+            background: #0d1014;
+            border: 1px solid #1c2027;
+            border-radius: 12px;
+        }
+
+        .court-map-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .court-map-title {
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+            color: #8b929d;
+        }
+
+        .court-map-legend {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+
+            font-size: 11px;
+            color: #8b929d;
+        }
+
+        .court-map-legend span {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .court-map-legend .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .court-map-legend .dot.in { background: #22c55e; }
+        .court-map-legend .dot.out { background: #ef4444; }
+        .court-map-legend .dot.uncertain { background: #f59e0b; }
+
+        .court-map-wrap {
+            display: flex;
+            justify-content: center;
+        }
+
+        .court-map-wrap svg {
+            width: 100%;
+            max-width: 300px;
+            height: auto;
+            display: block;
+        }
+
+        .court-map-outline {
+            fill: #05070a;
+            stroke: #374151;
+            stroke-width: 2;
+        }
+
+        .court-map-net {
+            stroke: #6b7280;
+            stroke-width: 3;
+            stroke-dasharray: 6 5;
+        }
+
+        .court-map-kitchen,
+        .court-map-center {
+            stroke: #262c35;
+            stroke-width: 1.5;
+        }
+
+        .court-map-dot {
+            stroke: #ffffff;
+            stroke-width: 1.5;
+            cursor: default;
+        }
+
+        .court-map-dot.in { fill: #22c55e; }
+        .court-map-dot.out { fill: #ef4444; }
+        .court-map-dot.uncertain { fill: #f59e0b; }
+
+        .court-map-dot.new {
+            animation: dotDropIn 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+            transform-origin: center;
+            transform-box: fill-box;
+        }
+
+        .court-map-empty {
+            font-size: 12px;
+            color: #5b626d;
+            text-align: center;
+            padding: 20px 0;
         }
 
         /* =========================
@@ -541,6 +669,29 @@
         </section>
 
 
+        <!-- 2D BOUNCE MAP (only "bounce" events, plotted live, kept
+             for the whole session) -->
+        <section class="court-map-panel">
+
+            <div class="court-map-header">
+                <span class="court-map-title">Live bounce map</span>
+
+                <div class="court-map-legend">
+                    <span><i class="dot in"></i>In</span>
+                    <span><i class="dot out"></i>Out</span>
+                    <span><i class="dot uncertain"></i>Uncertain</span>
+                </div>
+            </div>
+
+            <div class="court-map-wrap" id="courtMapWrap">
+                <p class="court-map-empty" id="courtMapEmpty">
+                    No bounces yet. They'll show up here as the match goes on.
+                </p>
+            </div>
+
+        </section>
+
+
         <!-- LINE CALL REPLAYS -->
         <h2 class="replays-title">Line call replays</h2>
 
@@ -575,6 +726,7 @@
 
 
     <script>
+        (function () {
         /*
          * Display current session ID.
          * app.js continues to handle WebRTC/signaling.
@@ -599,6 +751,7 @@
             sessionDisplay.textContent =
                 `Session: ${session}`;
         }
+        })();
     </script>
 
 
