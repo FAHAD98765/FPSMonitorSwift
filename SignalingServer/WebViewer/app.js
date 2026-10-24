@@ -1,12 +1,12 @@
-
 /* ============================================================
    FPS MONITOR WEB VIEWER
    Updated:
    - Every valid bounce updates the 2D court map.
-   - UNCERTAIN badge requires a dedicated LineCall marker,
-     uncertain confidence, and a valid HTTPS clip URL.
-   - Replay is only added for qualifying uncertain LineCall
-     bounce events.
+   - UNCERTAIN badge + replay show for any bounce event whose
+     confidence_level is not "high" and that carries a clip URL.
+     (No special "linecall"/"event_kind" marker is required — the
+     backend sends plain bounce events, so confidence is the only
+     signal we have for "uncertain".)
    ============================================================ */
 
 // NOTE: named viewerParams (not params): index.html's inline script
@@ -954,22 +954,6 @@ function isBounceEvent(event) {
     return false;
 }
 
-// A generic bounce must not display the UNCERTAIN badge.
-// The backend marks genuine LineCall notifications explicitly.
-function isDedicatedLineCallEvent(event) {
-    if (!event || typeof event !== "object") {
-        return false;
-    }
-
-    return (
-        event.linecall === true ||
-        event.is_linecall === true ||
-        String(event.event_kind || "").toLowerCase() === "linecall" ||
-        String(event.event_type || "").toLowerCase() === "linecall" ||
-        String(event.notification_type || "").toLowerCase() === "linecall"
-    );
-}
-
 function hideLineCall() {
     dlog("[LineCall] Hiding badge (timer expired).");
 
@@ -1314,6 +1298,14 @@ function addReplay(clipUrl, callNumber, result) {
 
 // ============================================================
 // EVENT DISPLAY LOGIC
+//
+// Flow confirmed by the client:
+//   - A NORMAL bounce (confidence_level === "high") only updates
+//     the 2D map. No badge, no replay card.
+//   - An UNCERTAIN bounce (confidence_level is present and is NOT
+//     "high") updates the map AND shows the big centered badge AND
+//     adds a replay card — but only if it has a usable clip URL
+//     (no clip = nothing to replay, so the badge is skipped too).
 // ============================================================
 
 function showLineCall(event) {
@@ -1328,12 +1320,11 @@ function showLineCall(event) {
     const confidence = String(event.confidence_level || "").toLowerCase();
 
     const isBounce = isBounceEvent(event);
-    const isDedicatedLineCall = isDedicatedLineCallEvent(event);
     const isUncertain = !!confidence && confidence !== "high";
     const clipUrl = getSafeClipUrl(event.url);
 
     // --------------------------------------------------------
-    // MAP: EVERY BOUNCE, regardless of URL or LineCall status.
+    // MAP: EVERY BOUNCE, uncertain or not, with or without a clip.
     // --------------------------------------------------------
 
     if (isBounce) {
@@ -1345,12 +1336,12 @@ function showLineCall(event) {
     }
 
     // --------------------------------------------------------
-    // BADGE: dedicated LineCall + uncertain confidence + URL.
-    // Generic bounce events only update the map.
+    // BADGE + REPLAY: only an UNCERTAIN bounce with a clip URL.
+    // A normal (high-confidence) bounce never shows a badge.
     // --------------------------------------------------------
 
     const shouldShowUncertain =
-        isDedicatedLineCall &&
+        isBounce &&
         isUncertain &&
         !!clipUrl;
 
@@ -1358,7 +1349,6 @@ function showLineCall(event) {
         dlog("[LineCall] Badge/replay suppressed:", {
             event_id: event.event_id,
             isBounce,
-            isDedicatedLineCall,
             isUncertain,
             hasClipUrl: !!clipUrl
         });
@@ -1395,13 +1385,7 @@ function showLineCall(event) {
 
     totalCalls++;
 
-    // Replay only for a qualifying uncertain bounce.
-    if (
-        isBounce &&
-        String(event.type || "").toLowerCase() === "bounce"
-    ) {
-        addReplay(clipUrl, totalCalls, "uncertain");
-    }
+    addReplay(clipUrl, totalCalls, "uncertain");
 
     clearTimeout(lineCallHideTimer);
 
