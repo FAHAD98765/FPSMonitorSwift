@@ -1,3 +1,4 @@
+
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -7,27 +8,7 @@ const os = require('os');
 const PORT = process.env.PORT || 8765;
 const WEB_ROOT = path.resolve(__dirname, 'WebViewer');
 
-// ============================================================
-// LINE CALL PUSH (backend -> this server -> viewers)
-//
-// POST /linecall/<sessionId>
-// Header: x-api-key: <LINECALL_SECRET>
-// Body:   event JSON with event_id and session_id
-//
-// Configure on Fly.io:
-// fly secrets set LINECALL_SECRET=your-long-random-string
-// ============================================================
-
-const LINECALL_SECRET = process.env.LINECALL_SECRET || '';
-const LINECALL_MAX_BODY_BYTES = 256 * 1024;
-
-if (!LINECALL_SECRET) {
-  console.warn(
-    '[!] LINECALL_SECRET is not set. POST /linecall/... will return 503.'
-  );
-}
-
-const lastLineCallEvents = new Map();
+// sessionId -> { producer: ws|null, viewers: Set<ws> }
 const sessions = new Map();
 
 function getSession(sessionId) {
@@ -65,193 +46,12 @@ function getLocalIPs() {
   return results;
 }
 
-function sendJson(res, status, obj) {
-  res.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store'
-  });
-
-  res.end(JSON.stringify(obj));
-}
-
-function secretsMatch(a, b) {
-  const bufA = Buffer.from(String(a || ''));
-  const bufB = Buffer.from(String(b || ''));
-
-  if (bufA.length !== bufB.length) {
-    return false;
-  }
-
-  return require('crypto').timingSafeEqual(bufA, bufB);
-}
-
-function handleLineCallPost(req, res, sessionId) {
-  if (!LINECALL_SECRET) {
-    sendJson(res, 503, {
-      ok: false,
-      error: 'LINECALL_SECRET not configured on server'
-    });
-    req.resume();
-    return;
-  }
-
-  if (!secretsMatch(req.headers['x-api-key'], LINECALL_SECRET)) {
-    sendJson(res, 401, {
-      ok: false,
-      error: 'Invalid API key'
-    });
-    req.resume();
-    return;
-  }
-
-  let size = 0;
-  const chunks = [];
-  let aborted = false;
-
-  req.on('data', (chunk) => {
-    if (aborted) return;
-
-    size += chunk.length;
-
-    if (size > LINECALL_MAX_BODY_BYTES) {
-      aborted = true;
-      sendJson(res, 413, {
-        ok: false,
-        error: 'Body too large'
-      });
-      req.destroy();
-      return;
-    }
-
-    chunks.push(chunk);
-  });
-
-  req.on('end', () => {
-    if (aborted) return;
-
-    let event;
-
-    try {
-      event = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    } catch (error) {
-      sendJson(res, 400, {
-        ok: false,
-        error: 'Body must be valid JSON'
-      });
-      return;
-    }
-
-    if (!event || typeof event !== 'object' || Array.isArray(event)) {
-      sendJson(res, 400, {
-        ok: false,
-        error: 'Body must be a JSON object'
-      });
-      return;
-    }
-
-    // Accept the event itself or { event: {...} }.
-    if (!event.event_id && event.event && event.event.event_id) {
-      event = event.event;
-    }
-
-    if (!event.event_id) {
-      sendJson(res, 400, {
-        ok: false,
-        error: 'event_id is required'
-      });
-      return;
-    }
-
-    // The payload session ID must match the URL session ID.
-    if (typeof event.session_id !== 'string' || !event.session_id.trim()) {
-      sendJson(res, 400, {
-        ok: false,
-        error: 'session_id is required in event JSON'
-      });
-      return;
-    }
-
-    if (event.session_id.trim() !== sessionId) {
-      sendJson(res, 409, {
-        ok: false,
-        error: 'session_id does not match URL sessionId',
-        url_session_id: sessionId,
-        event_session_id: event.session_id.trim()
-      });
-      return;
-    }
-
-    // Preserve the full payload for the WebViewer.
-    lastLineCallEvents.set(sessionId, event);
-
-    const session = sessions.get(sessionId);
-    let delivered = 0;
-
-    if (session) {
-      session.viewers.forEach((viewer) => {
-        if (viewer.readyState === WebSocket.OPEN) {
-          safeSend(viewer, {
-            type: 'line-call',
-            sessionId,
-            event
-          });
-
-          delivered++;
-        }
-      });
-    }
-
-    console.log(
-      `[LineCall] "${sessionId}" event ${event.event_id} -> ${delivered} viewer(s)`
-    );
-
-    sendJson(res, 200, {
-      ok: true,
-      delivered
-    });
-  });
-
-  req.on('error', () => {
-    if (!res.headersSent) {
-      sendJson(res, 400, {
-        ok: false,
-        error: 'Request error'
-      });
-    }
-  });
-}
-
 // ============================================================
 // HTTP SERVER
 // ============================================================
 
 const httpServer = http.createServer((req, res) => {
   let requestPath = (req.url || '/').split('?')[0];
-
-  const lineCallMatch = requestPath.match(/^\/linecall\/([^/]+)\/?$/);
-
-  if (lineCallMatch) {
-    if (req.method !== 'POST') {
-      res.writeHead(405, { Allow: 'POST' });
-      res.end('Method Not Allowed');
-      return;
-    }
-
-    let sessionId;
-
-    try {
-      sessionId = decodeURIComponent(lineCallMatch[1]);
-    } catch (error) {
-      sendJson(res, 400, {
-        ok: false,
-        error: 'Bad session id'
-      });
-      return;
-    }
-
-    handleLineCallPost(req, res, sessionId);
-    return;
-  }
 
   if (requestPath === '/' || requestPath === '/view') {
     requestPath = '/index.html';
@@ -326,10 +126,15 @@ wss.on('connection', (ws) => {
         type: 'error',
         message: 'sessionId is required'
       });
+
       return;
     }
 
     switch (type) {
+      // ------------------------------------------------------
+      // REGISTER
+      // ------------------------------------------------------
+
       case 'register': {
         if (!['producer', 'viewer'].includes(msg.role)) {
           safeSend(ws, {
@@ -339,6 +144,7 @@ wss.on('connection', (ws) => {
           return;
         }
 
+        // Prevent a socket from registering in another session.
         if (ws.sessionId && ws.sessionId !== sessionId) {
           safeSend(ws, {
             type: 'error',
@@ -347,6 +153,7 @@ wss.on('connection', (ws) => {
           return;
         }
 
+        // Prevent changing roles or duplicate registration.
         if (ws.sessionId === sessionId && ws.role) {
           if (ws.role !== msg.role) {
             safeSend(ws, {
@@ -354,13 +161,19 @@ wss.on('connection', (ws) => {
               message: 'Socket is already registered with another role'
             });
           }
+
           return;
         }
 
         const session = getSession(sessionId);
 
-        // Only one active viewer per session.
+        // ----------------------------------------------------
+        // SINGLE VIEWER LIMIT
+        // Only one active viewer per session is allowed.
+        // ----------------------------------------------------
+
         if (msg.role === 'viewer') {
+          // Clean up sockets that are no longer open.
           for (const viewer of session.viewers) {
             if (viewer.readyState !== WebSocket.OPEN) {
               session.viewers.delete(viewer);
@@ -376,12 +189,18 @@ wss.on('connection', (ws) => {
               type: 'error',
               message: 'Stream is busy. Another viewer is already connected.'
             });
+
+            // Do not register the rejected viewer.
             return;
           }
         }
 
         ws.sessionId = sessionId;
         ws.role = msg.role;
+
+        // ----------------------------------------------------
+        // PRODUCER REGISTRATION
+        // ----------------------------------------------------
 
         if (msg.role === 'producer') {
           if (session.producer && session.producer !== ws) {
@@ -391,6 +210,7 @@ wss.on('connection', (ws) => {
 
             const oldProducer = session.producer;
             session.producer = ws;
+
             oldProducer.close(4001, 'Producer replaced');
           } else {
             session.producer = ws;
@@ -413,6 +233,11 @@ wss.on('connection', (ws) => {
             });
           });
         } else {
+          // --------------------------------------------------
+          // VIEWER REGISTRATION
+          // Reached only when the viewer limit permits access.
+          // --------------------------------------------------
+
           session.viewers.add(ws);
 
           console.log(
@@ -440,21 +265,12 @@ wss.on('connection', (ws) => {
           clientId: ws.id
         });
 
-        // New/reconnected viewer learns the latest event ID.
-        if (msg.role === 'viewer') {
-          const latest = lastLineCallEvents.get(sessionId);
-
-          if (latest) {
-            safeSend(ws, {
-              type: 'line-call-latest',
-              sessionId,
-              event: latest
-            });
-          }
-        }
-
         break;
       }
+
+      // ------------------------------------------------------
+      // OFFER / ANSWER / ICE CANDIDATE
+      // ------------------------------------------------------
 
       case 'offer':
       case 'answer':
@@ -493,6 +309,10 @@ wss.on('connection', (ws) => {
         break;
       }
 
+      // ------------------------------------------------------
+      // PING
+      // ------------------------------------------------------
+
       case 'ping': {
         safeSend(ws, { type: 'pong' });
         break;
@@ -504,6 +324,10 @@ wss.on('connection', (ws) => {
         );
     }
   });
+
+  // ==========================================================
+  // DISCONNECT — BOTH DIRECTIONS
+  // ==========================================================
 
   ws.on('close', () => {
     console.log(
@@ -520,6 +344,10 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    // --------------------------------------------------------
+    // PRODUCER / HOST DISCONNECTED
+    // --------------------------------------------------------
+
     if (session.producer === ws) {
       session.producer = null;
 
@@ -535,6 +363,10 @@ wss.on('connection', (ws) => {
       });
     }
 
+    // --------------------------------------------------------
+    // VIEWER DISCONNECTED
+    // --------------------------------------------------------
+
     if (ws.role === 'viewer') {
       session.viewers.delete(ws);
 
@@ -542,6 +374,8 @@ wss.on('connection', (ws) => {
         `[i] Viewer ${ws.id} disconnected from ${ws.sessionId}`
       );
 
+      // Notify host so the Swift app can stop streaming
+      // when no viewers remain.
       if (session.producer) {
         safeSend(session.producer, {
           type: 'viewer-left',
@@ -556,9 +390,12 @@ wss.on('connection', (ws) => {
       }
     }
 
+    // --------------------------------------------------------
+    // REMOVE EMPTY SESSION
+    // --------------------------------------------------------
+
     if (!session.producer && session.viewers.size === 0) {
       sessions.delete(ws.sessionId);
-      lastLineCallEvents.delete(ws.sessionId);
 
       console.log(
         `[i] Empty session removed: ${ws.sessionId}`
@@ -585,7 +422,6 @@ httpServer.listen(PORT, '0.0.0.0', () => {
 
   console.log(`HTTP/Web Viewer: http://localhost:${PORT}`);
   console.log(`WebSocket:       ws://localhost:${PORT}`);
-  console.log(`Line call push:  POST http://localhost:${PORT}/linecall/<sessionId>`);
 
   console.log('');
   console.log('Reachable on LAN:');
